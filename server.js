@@ -75,7 +75,9 @@ function createRoom(hostSocket, hostName) {
     round: 1,
     pendingBattle: null,
     log: [],
-    chat: []
+    chat: [],
+    drawVotes: [],
+    gameResult: null
   };
 
   room.players.push(makePlayer(hostSocket.id, hostName, 0));
@@ -91,6 +93,7 @@ function makePlayer(socketId, name, index) {
     color: COLORS[index % COLORS.length],
     connected: true,
     defeated: false,
+    resigned: false,
     stats: {
       money: randomInt(640, 720),
       army: randomInt(108, 124),
@@ -279,6 +282,8 @@ function initializeGame(room) {
   room.turnIndex = 0;
   room.round = 1;
   room.pendingBattle = null;
+  room.drawVotes = [];
+  room.gameResult = null;
   room.log = [`Round 1 begins. ${room.players[0].name} moves first.`];
   addSystemMessage(room, `The war has begun. ${room.players[0].name} moves first.`);
 }
@@ -362,6 +367,7 @@ function publicPlayer(player, index, room) {
     color: player.color,
     connected: player.connected,
     defeated: player.defeated,
+    resigned: player.resigned,
     stats: { ...player.stats },
     tileCount: room.status === 'playing' || room.status === 'finished' ? countTiles(room, index) : 0,
     upgradeOffers: getUpgradeOffers(player)
@@ -390,7 +396,9 @@ function publicRoom(room) {
       armorResolved: room.pendingBattle.armorResolved
     } : null,
     log: room.log.slice(-20),
-    chat: room.chat.slice(-MAX_CHAT_MESSAGES)
+    chat: room.chat.slice(-MAX_CHAT_MESSAGES),
+    drawVotes: [...room.drawVotes],
+    gameResult: room.gameResult ? { ...room.gameResult } : null
   };
 }
 
@@ -463,22 +471,76 @@ function applyRoundEconomy(room) {
   }
 }
 
+function getLivingPlayers(room, connectedOnly = false) {
+  return room.players
+    .map((player, index) => ({ player, index }))
+    .filter(({ player, index }) =>
+      !player.defeated &&
+      countTiles(room, index) > 0 &&
+      (!connectedOnly || player.connected)
+    );
+}
+
+function finishGame(room, result) {
+  if (room.status === 'finished') return false;
+  room.status = 'finished';
+  room.pendingBattle = null;
+  room.drawVotes = [];
+  room.gameResult = result;
+  addLog(room, result.message);
+  addSystemMessage(room, result.message);
+  return true;
+}
+
+function finishGameIfDecided(room) {
+  const living = getLivingPlayers(room);
+  if (living.length > 1) return false;
+
+  const winner = living[0];
+  if (winner) {
+    return finishGame(room, {
+      type: 'victory',
+      winnerId: winner.player.id,
+      message: `${winner.player.name} wins the game!`
+    });
+  }
+
+  return finishGame(room, {
+    type: 'draw',
+    reason: 'no-contestants',
+    message: 'The game ends with no remaining contestants.'
+  });
+}
+
+function eligibleDrawPlayers(room) {
+  return getLivingPlayers(room, true);
+}
+
+function pruneDrawVotes(room) {
+  const eligibleIds = new Set(eligibleDrawPlayers(room).map(({ player }) => player.id));
+  room.drawVotes = room.drawVotes.filter(playerId => eligibleIds.has(playerId));
+}
+
+function finishDrawIfAccepted(room) {
+  pruneDrawVotes(room);
+  const eligible = eligibleDrawPlayers(room);
+  if (eligible.length < 2) return false;
+
+  const allAccepted = eligible.every(({ player }) => room.drawVotes.includes(player.id));
+  if (!allAccepted) return false;
+
+  return finishGame(room, {
+    type: 'draw',
+    reason: 'unanimous',
+    message: 'All active players accepted the draw. The game ends in a draw.'
+  });
+}
+
 function nextTurn(room) {
   if (room.status !== 'playing') return;
   room.pendingBattle = null;
 
-  const living = room.players
-    .map((player, index) => ({ player, index }))
-    .filter(({ player, index }) => !player.defeated && countTiles(room, index) > 0);
-
-  if (living.length <= 1) {
-    room.status = 'finished';
-    const winner = living[0];
-    const message = winner ? `${winner.player.name} wins the game!` : 'The game ends with no winner.';
-    addLog(room, message);
-    addSystemMessage(room, message);
-    return;
-  }
+  if (finishGameIfDecided(room)) return;
 
   let wrapped = false;
   let foundNext = false;
@@ -709,6 +771,7 @@ function resolveBattle(room, battle, selectedCell) {
   const attackerLosses = initialAttackerForce - attackerForce;
   const defenderLosses = initialDefenderForce - defenderForce;
   room.pendingBattle = null;
+  pruneDrawVotes(room);
   nextTurn(room);
 
   io.to(room.code).emit('battleResult', {
@@ -745,7 +808,10 @@ function leaveRoom(socket) {
   const playerIndex = room.players.findIndex(player => player.id === socket.id);
   const player = room.players[playerIndex];
 
-  if (player) player.connected = false;
+  if (player) {
+    player.connected = false;
+    room.drawVotes = room.drawVotes.filter(playerId => playerId !== player.id);
+  }
 
   if (room.status === 'lobby') {
     room.players = room.players.filter(candidate => candidate.id !== socket.id);
@@ -775,6 +841,7 @@ function leaveRoom(socket) {
     }
   }
 
+  if (room.status === 'playing') finishDrawIfAccepted(room);
   emitRoom(room);
 }
 
@@ -874,6 +941,73 @@ io.on('connection', socket => {
     if (room.pendingBattle) return callback?.({ ok: false, error: 'Resolve the battle first.' });
     addLog(room, `${currentPlayer(room).name} ended their turn.`);
     nextTurn(room);
+    emitRoom(room);
+    callback?.({ ok: true });
+  });
+
+  socket.on('toggleDrawVote', (_, callback) => {
+    const room = rooms.get(socket.data.roomCode);
+    if (!room || room.status !== 'playing') return callback?.({ ok: false, error: 'Game not available.' });
+    if (room.pendingBattle) return callback?.({ ok: false, error: 'Resolve the current battle first.' });
+
+    const playerIndex = room.players.findIndex(player => player.id === socket.id);
+    const player = room.players[playerIndex];
+    if (!player || player.defeated || countTiles(room, playerIndex) === 0) {
+      return callback?.({ ok: false, error: 'Only active players can vote for a draw.' });
+    }
+
+    pruneDrawVotes(room);
+    const eligible = eligibleDrawPlayers(room);
+    if (eligible.length < 2) {
+      return callback?.({ ok: false, error: 'At least two active connected players are required.' });
+    }
+
+    const alreadyVoted = room.drawVotes.includes(socket.id);
+    if (alreadyVoted) {
+      room.drawVotes = room.drawVotes.filter(playerId => playerId !== socket.id);
+      addSystemMessage(room, `${player.name} withdrew their draw vote.`);
+    } else {
+      room.drawVotes.push(socket.id);
+      addSystemMessage(room, `${player.name} voted to end the game in a draw.`);
+    }
+
+    const nowVoting = !alreadyVoted;
+    const completed = finishDrawIfAccepted(room);
+    emitRoom(room);
+    callback?.({ ok: true, voted: nowVoting, completed });
+  });
+
+  socket.on('resignGame', (_, callback) => {
+    const room = rooms.get(socket.data.roomCode);
+    if (!room || room.status !== 'playing') return callback?.({ ok: false, error: 'Game not available.' });
+    if (room.pendingBattle) return callback?.({ ok: false, error: 'Resolve the current battle before resigning.' });
+
+    const playerIndex = room.players.findIndex(player => player.id === socket.id);
+    const player = room.players[playerIndex];
+    if (!player || player.defeated || countTiles(room, playerIndex) === 0) {
+      return callback?.({ ok: false, error: 'You are no longer an active player.' });
+    }
+
+    player.resigned = true;
+    player.defeated = true;
+    player.stats.army = 0;
+    player.stats.armor = 0;
+    player.stats.morale = 55;
+    room.drawVotes = room.drawVotes.filter(playerId => playerId !== player.id);
+
+    addLog(room, `${player.name} resigned. Their remaining territory is now abandoned.`);
+    addSystemMessage(room, `${player.name} resigned from the game.`);
+
+    if (room.hostId === player.id) {
+      const nextHost = room.players.find(candidate => candidate.connected && !candidate.defeated);
+      if (nextHost) room.hostId = nextHost.id;
+    }
+
+    if (!finishGameIfDecided(room) && room.status === 'playing') {
+      if (room.turnIndex === playerIndex) nextTurn(room);
+      if (room.status === 'playing') finishDrawIfAccepted(room);
+    }
+
     emitRoom(room);
     callback?.({ ok: true });
   });
