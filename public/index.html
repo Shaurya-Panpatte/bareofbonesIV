@@ -22,7 +22,7 @@
     <section id="homeView" class="panel home-panel">
       <div class="hero-copy">
         <span class="pill">2–6 players</span>
-        <h2>Grow your nation. Win against your friends using strategy, not your army.</h2>
+        <h2>Grow your nation. Win through strategy—not just a bigger army.</h2>
         <p>Fight across connected islands, use terrain and logistics, intercept armored convoys, manage upkeep, and coordinate or bluff through live room chat.</p>
       </div>
 
@@ -100,6 +100,11 @@
         </div>
 
         <button id="endTurnBtn" class="secondary end-turn">End turn</button>
+        <div class="game-actions">
+          <button id="drawBtn" class="secondary draw-action" title="A draw ends the game only after every active connected player accepts.">Offer draw</button>
+          <button id="resignBtn" class="danger resign-action" title="Resigning immediately removes you from the active game.">Resign</button>
+        </div>
+        <p id="gameActionStatus" class="game-action-status"></p>
       </aside>
 
       <section class="board-panel panel">
