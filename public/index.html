@@ -22,17 +22,18 @@
     <section id="homeView" class="panel home-panel">
       <div class="hero-copy">
         <span class="pill">2–6 players</span>
-        <h2>Grow your nation. Defeat your friends with strategy.</h2>
-        <p>Every map is a clean connected landmass, divided into contiguous countries. Build your stats, choose border targets, and fight tactical rounds.</p>
+        <h2>Grow your nation. Win through strategy—not just a bigger army.</h2>
+        <p>Fight across connected islands, use terrain and logistics, intercept armored convoys, manage upkeep, and coordinate or bluff through live room chat.</p>
       </div>
 
       <div class="join-card">
         <label for="playerName">Player name</label>
-        <input id="playerName" maxlength="18" placeholder="Enter your name here (without spaces)" value="DefaultName1" />
+        <input id="playerName" maxlength="18" placeholder="Enter your name" value="DefaultName1" />
         <div class="button-row">
           <button id="createBtn" class="primary">Create room</button>
         </div>
-        <div class="divider"><span>or Join a Room</span></div>
+        <div class="divider"><span>or join a room</span></div>
+        <label class="sr-only" for="roomCodeInput">Room code</label>
         <input id="roomCodeInput" maxlength="5" placeholder="ROOM CODE" />
         <button id="joinBtn" class="secondary">Join room</button>
         <p id="homeError" class="error"></p>
@@ -53,7 +54,7 @@
         </div>
       </div>
       <div id="playerList" class="player-grid"></div>
-      <p class="muted">Open this URL in another browser or device, enter the room code, and join. The host can start with 2–6 players.</p>
+      <p class="muted">Open this URL on another browser or device, enter the room code, and join. The host can start with 2–6 players.</p>
       <p id="lobbyError" class="error"></p>
     </section>
 
@@ -64,37 +65,98 @@
           <strong id="roundLabel">1</strong>
           <small id="turnLabel">Waiting…</small>
         </div>
+
         <div id="statsPanel" class="stats-list"></div>
+
         <div class="shop">
-          <h3>Upgrade shop</h3>
-          <button data-upgrade="army">+25 Army <span>$120</span></button>
-          <button data-upgrade="efficiency">+6 Efficiency <span>$180</span></button>
-          <button data-upgrade="technology">+1 Technology <span>$250</span></button>
-          <button data-upgrade="armor">+1 Armor <span>$220</span></button>
+          <div class="shop-heading">
+            <h3>Upgrade shop</h3>
+            <small>Prices rise as you specialize</small>
+          </div>
+          <button data-upgrade="army">
+            <span class="upgrade-name">+24 Army</span>
+            <span class="upgrade-cost">$140</span>
+          </button>
+          <button data-upgrade="efficiency">
+            <span class="upgrade-name">+5 Efficiency</span>
+            <span class="upgrade-cost">$190</span>
+          </button>
+          <button data-upgrade="technology">
+            <span class="upgrade-name">+1 Technology</span>
+            <span class="upgrade-cost">$280</span>
+          </button>
+          <button data-upgrade="armor">
+            <span class="upgrade-name">+1 Armor</span>
+            <span class="upgrade-cost">$240</span>
+          </button>
+          <button data-upgrade="logistics">
+            <span class="upgrade-name">+1 Logistics</span>
+            <span class="upgrade-cost">$220</span>
+          </button>
+          <button data-upgrade="fortification">
+            <span class="upgrade-name">+1 Fortification</span>
+            <span class="upgrade-cost">$205</span>
+          </button>
         </div>
+
         <button id="endTurnBtn" class="secondary end-turn">End turn</button>
       </aside>
 
       <section class="board-panel panel">
         <div class="board-toolbar">
-          <div>
-            <strong id="selectionTitle">Select one of your borering tiles (to another country)</strong>
+          <div class="selection-copy">
+            <strong id="selectionTitle">Select one of your border tiles</strong>
             <small id="selectionHelp">Then choose an adjacent enemy tile.</small>
           </div>
+
+          <div id="oddsPreview" class="odds-preview">
+            <span>Battle estimate</span>
+            <strong>Hover an enemy tile</strong>
+          </div>
+
           <div class="army-control">
-            <label for="armyCommit">Army Size to commit to an attack: <strong id="armyCommitValue">25</strong></label>
+            <label for="armyCommit">Troops committed: <strong id="armyCommitValue">25</strong></label>
             <input id="armyCommit" type="range" min="5" max="100" value="25" />
           </div>
         </div>
+
         <div class="canvas-wrap">
           <canvas id="gameCanvas" width="960" height="640"></canvas>
           <div id="gameOverOverlay" class="game-over hidden"></div>
         </div>
+
+        <div class="terrain-legend">
+          <span><i class="terrain-swatch plains"></i>Plains</span>
+          <span><i class="terrain-swatch forest"></i>Forest +14% defense</span>
+          <span><i class="terrain-swatch mountain"></i>Mountain +28% defense</span>
+          <span><i class="terrain-swatch bridge"></i>Bridge choke point</span>
+          <span><i class="capital-symbol">★</i>Capital</span>
+        </div>
       </section>
 
       <aside class="rightbar panel">
-        <h3>Battle log</h3>
-        <div id="battleLog" class="battle-log"></div>
+        <section class="activity-section">
+          <div class="section-heading">
+            <h3>Battle log</h3>
+            <small>Latest strategic events</small>
+          </div>
+          <div id="battleLog" class="battle-log"></div>
+        </section>
+
+        <section class="chat-section">
+          <div class="section-heading">
+            <h3>Room chat</h3>
+            <small>Everyone in the game can read this</small>
+          </div>
+          <div id="chatMessages" class="chat-messages" aria-live="polite"></div>
+          <form id="chatForm" class="chat-form">
+            <label class="sr-only" for="chatInput">Chat message</label>
+            <input id="chatInput" maxlength="180" autocomplete="off" placeholder="Message players…" />
+            <button id="chatSendBtn" class="primary" type="submit">Send</button>
+          </form>
+          <p id="chatError" class="chat-error"></p>
+        </section>
+
         <div class="legend">
           <span><i class="own"></i>Your selected tile</span>
           <span><i class="target"></i>Attackable border</span>
@@ -106,8 +168,8 @@
   <div id="armorModal" class="modal hidden">
     <div class="modal-card">
       <p class="eyebrow">ARMORED VEHICLE INTERCEPT</p>
-      <h2>Pick the hidden convoy tile</h2>
-      <p>The defender’s armored vehicles is only vulerable in one of the sectors. Hit the correct tile to destroy a chunk before combat.</p>
+      <h2>Pick the hidden convoy sector</h2>
+      <p>A direct hit destroys 40–60% of the defender’s armor. A miss no longer decides the whole battle—terrain, technology, morale, logistics, and troop commitment still matter.</p>
       <div id="armorGrid" class="armor-grid"></div>
       <p id="armorStatus" class="muted"></p>
     </div>
