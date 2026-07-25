@@ -17,10 +17,10 @@ const HEIGHT = 16;
 const MAX_CHAT_MESSAGES = 100;
 
 const TERRAIN = {
-  plains: { name: 'Plains', defense: 1, occupationLoss: 0.12 },
-  forest: { name: 'Forest', defense: 1.14, occupationLoss: 0.16 },
-  mountain: { name: 'Mountain', defense: 1.28, occupationLoss: 0.22 },
-  bridge: { name: 'Bridge', defense: 1.2, occupationLoss: 0.2 }
+  plains: { name: 'Plains', defense: 1, occupationLoss: 0.1 },
+  forest: { name: 'Forest', defense: 1.06, occupationLoss: 0.13 },
+  mountain: { name: 'Mountain', defense: 1.12, occupationLoss: 0.17 },
+  bridge: { name: 'Bridge', defense: 1.08, occupationLoss: 0.15 }
 };
 
 function clamp(value, min, max) {
@@ -77,7 +77,8 @@ function createRoom(hostSocket, hostName) {
     log: [],
     chat: [],
     drawVotes: [],
-    gameResult: null
+    gameResult: null,
+    startingBalance: null
   };
 
   room.players.push(makePlayer(hostSocket.id, hostName, 0));
@@ -95,11 +96,12 @@ function makePlayer(socketId, name, index) {
     defeated: false,
     resigned: false,
     stats: {
-      money: randomInt(640, 720),
-      army: randomInt(108, 124),
-      efficiency: randomInt(80, 92),
-      technology: randomInt(2, 3),
-      armor: randomInt(2, 4),
+      // Equal starting combat stats keep player order from creating a hidden advantage.
+      money: 680,
+      army: 116,
+      efficiency: 86,
+      technology: 2,
+      armor: 3,
       logistics: 1,
       fortification: 1,
       morale: 100,
@@ -284,6 +286,7 @@ function initializeGame(room) {
   room.pendingBattle = null;
   room.drawVotes = [];
   room.gameResult = null;
+  room.startingBalance = buildStartingBalance(room);
   room.log = [`Round 1 begins. ${room.players[0].name} moves first.`];
   addSystemMessage(room, `The war has begun. ${room.players[0].name} moves first.`);
 }
@@ -298,6 +301,95 @@ function countTiles(room, playerIndex) {
 
 function currentPlayer(room) {
   return room.players[room.turnIndex];
+}
+
+function terrainBreakdownForPlayer(room, playerIndex) {
+  const counts = { plains: 0, forest: 0, mountain: 0, bridge: 0 };
+  let totalDefenseBonus = 0;
+
+  for (let y = 0; y < room.height; y++) {
+    for (let x = 0; x < room.width; x++) {
+      if (room.map[y][x] !== playerIndex) continue;
+      const terrainKey = room.terrain[y][x] || 'plains';
+      counts[terrainKey] = (counts[terrainKey] || 0) + 1;
+      totalDefenseBonus += ((TERRAIN[terrainKey] || TERRAIN.plains).defense - 1) * 100;
+    }
+  }
+
+  const tiles = Object.values(counts).reduce((sum, value) => sum + value, 0);
+  return {
+    ...counts,
+    averageDefenseBonus: tiles > 0 ? Math.round((totalDefenseBonus / tiles) * 10) / 10 : 0
+  };
+}
+
+function buildStartingBalance(room) {
+  const trackedStats = ['army', 'efficiency', 'logistics', 'fortification', 'technology', 'armor'];
+  const playerSnapshots = room.players.map((player, index) => {
+    const terrain = terrainBreakdownForPlayer(room, index);
+    const capital = room.capitals[index];
+    const capitalTerrain = capital ? room.terrain[capital.y][capital.x] || 'plains' : 'plains';
+
+    return {
+      id: player.id,
+      name: player.name,
+      color: player.color,
+      turnOrder: index + 1,
+      stats: Object.fromEntries(trackedStats.map(stat => [stat, player.stats[stat]])),
+      upgradeLevels: { ...player.upgradeLevels },
+      tileCount: countTiles(room, index),
+      terrain,
+      capitalTerrain
+    };
+  });
+
+  const averages = {};
+  for (const stat of trackedStats) {
+    averages[stat] = playerSnapshots.reduce((sum, player) => sum + player.stats[stat], 0) /
+      Math.max(1, playerSnapshots.length);
+  }
+  averages.tileCount = playerSnapshots.reduce((sum, player) => sum + player.tileCount, 0) /
+    Math.max(1, playerSnapshots.length);
+  averages.averageTerrainDefense = playerSnapshots.reduce(
+    (sum, player) => sum + player.terrain.averageDefenseBonus,
+    0
+  ) / Math.max(1, playerSnapshots.length);
+
+  for (const snapshot of playerSnapshots) {
+    snapshot.deviations = Object.fromEntries(
+      trackedStats.map(stat => [stat, Math.round((snapshot.stats[stat] - averages[stat]) * 10) / 10])
+    );
+    snapshot.deviations.tileCount = Math.round((snapshot.tileCount - averages.tileCount) * 10) / 10;
+    snapshot.deviations.averageTerrainDefense = Math.round(
+      (snapshot.terrain.averageDefenseBonus - averages.averageTerrainDefense) * 10
+    ) / 10;
+  }
+
+  const allCoreStatsEqual = trackedStats.every(stat =>
+    playerSnapshots.every(player => player.stats[stat] === playerSnapshots[0]?.stats[stat])
+  );
+  const allUpgradeLevelsEqual = playerSnapshots.every(player =>
+    Object.values(player.upgradeLevels).every(level => level === 0)
+  );
+
+  return {
+    generatedAt: Date.now(),
+    allCoreStatsEqual,
+    allUpgradeLevelsEqual,
+    averages: Object.fromEntries(
+      Object.entries(averages).map(([key, value]) => [key, Math.round(value * 10) / 10])
+    ),
+    players: playerSnapshots,
+    notes: [
+      allCoreStatsEqual
+        ? 'Army, efficiency, logistics, fortification, technology, and armor are identical for every player at game start.'
+        : 'One or more starting combat stats differ between players.',
+      allUpgradeLevelsEqual
+        ? 'Every purchased-upgrade level starts at 0.'
+        : 'One or more players started with a purchased-upgrade level above 0.',
+      'Procedural maps can still create small differences in tile count, terrain mix, capital terrain, and turn order.'
+    ]
+  };
 }
 
 function isAdjacent(a, b) {
@@ -326,38 +418,51 @@ function friendlySupport(room, tile, playerIndex) {
 
 function getUpgradeOffers(player) {
   const levels = player.upgradeLevels;
-  return {
+  const offers = {
     army: {
-      cost: 140 + levels.army * 85,
+      cost: 140 + levels.army * 80,
       gain: Math.max(12, 24 - levels.army * 2),
       label: 'Army'
     },
     efficiency: {
-      cost: 190 + levels.efficiency * 115,
+      cost: 170 + levels.efficiency * 90,
       gain: 5,
-      label: 'Efficiency'
+      label: 'Efficiency',
+      maximum: 120,
+      current: player.stats.efficiency
     },
     technology: {
-      cost: 280 + levels.technology * 180,
+      cost: 260 + levels.technology * 165,
       gain: 1,
-      label: 'Technology'
+      label: 'Technology',
+      maximum: 10,
+      current: player.stats.technology
     },
     armor: {
-      cost: 240 + levels.armor * 135,
+      cost: 220 + levels.armor * 125,
       gain: 1,
       label: 'Armor'
     },
     logistics: {
-      cost: 220 + levels.logistics * 150,
+      cost: 200 + levels.logistics * 135,
       gain: 1,
-      label: 'Logistics'
+      label: 'Logistics',
+      maximum: 8,
+      current: player.stats.logistics
     },
     fortification: {
-      cost: 205 + levels.fortification * 135,
+      cost: 170 + levels.fortification * 100,
       gain: 1,
-      label: 'Fortification'
+      label: 'Fortification',
+      maximum: 8,
+      current: player.stats.fortification
     }
   };
+
+  for (const offer of Object.values(offers)) {
+    offer.maxed = Number.isFinite(offer.maximum) && offer.current >= offer.maximum;
+  }
+  return offers;
 }
 
 function publicPlayer(player, index, room) {
@@ -369,6 +474,7 @@ function publicPlayer(player, index, room) {
     defeated: player.defeated,
     resigned: player.resigned,
     stats: { ...player.stats },
+    upgradeLevels: { ...player.upgradeLevels },
     tileCount: room.status === 'playing' || room.status === 'finished' ? countTiles(room, index) : 0,
     upgradeOffers: getUpgradeOffers(player)
   };
@@ -398,7 +504,8 @@ function publicRoom(room) {
     log: room.log.slice(-20),
     chat: room.chat.slice(-MAX_CHAT_MESSAGES),
     drawVotes: [...room.drawVotes],
-    gameResult: room.gameResult ? { ...room.gameResult } : null
+    gameResult: room.gameResult ? { ...room.gameResult } : null,
+    startingBalance: room.startingBalance ? JSON.parse(JSON.stringify(room.startingBalance)) : null
   };
 }
 
@@ -569,40 +676,59 @@ function nextTurn(room) {
   }
 }
 
+function sharedCombatBonuses(player) {
+  return {
+    technology: (player.stats.technology - 2) * 0.035,
+    efficiency: (player.stats.efficiency - 85) * 0.0025,
+    morale: (player.stats.morale - 100) * 0.003,
+    exhaustion: -player.stats.warExhaustion * 0.0015
+  };
+}
+
+function sumBonuses(bonuses) {
+  return Object.values(bonuses).reduce((sum, value) => sum + value, 0);
+}
+
+function defenderLocalShare(defender) {
+  return clamp(0.22 + Math.max(0, defender.stats.logistics - 1) * 0.01, 0.22, 0.29);
+}
+
 function combatFactors(room, attackerIndex, defenderIndex, from, target) {
   const attacker = room.players[attackerIndex];
   const defender = room.players[defenderIndex];
   const terrainKey = room.terrain[target.y][target.x] || 'plains';
   const terrain = TERRAIN[terrainKey] || TERRAIN.plains;
   const support = friendlySupport(room, from, attackerIndex);
-  const capitalDefense = isCapital(room, target, defenderIndex) ? 1.18 : 1;
+  const capitalBonus = isCapital(room, target, defenderIndex) ? 0.08 : 0;
 
-  const attackerFactors = {
-    technology: 1 + attacker.stats.technology * 0.055,
-    efficiency: 0.72 + attacker.stats.efficiency / 280,
-    morale: 0.84 + attacker.stats.morale / 500,
-    exhaustion: 1 - attacker.stats.warExhaustion * 0.003,
-    supply: clamp(0.86 + support * 0.045 + attacker.stats.logistics * 0.022, 0.86, 1.14),
-    bridgePenalty: terrainKey === 'bridge' ? 0.92 : 1
+  const attackerBonuses = {
+    ...sharedCombatBonuses(attacker),
+    support: support * 0.012,
+    logistics: Math.max(0, attacker.stats.logistics - 1) * 0.012,
+    bridge: terrainKey === 'bridge' ? -0.04 : 0
   };
 
-  const defenderFactors = {
-    technology: 1 + defender.stats.technology * 0.055,
-    efficiency: 0.72 + defender.stats.efficiency / 280,
-    morale: 0.84 + defender.stats.morale / 500,
-    exhaustion: 1 - defender.stats.warExhaustion * 0.003,
-    terrain: terrain.defense,
-    home: 1.08,
-    fortification: 1 + Math.min(0.3, defender.stats.fortification * 0.045),
-    capital: capitalDefense,
-    armor: 1 + Math.min(0.32, Math.sqrt(Math.max(0, defender.stats.armor)) * 0.075)
+  const defenderBonuses = {
+    ...sharedCombatBonuses(defender),
+    terrain: terrain.defense - 1,
+    home: 0.03,
+    fortification: Math.max(0, defender.stats.fortification - 1) * 0.018,
+    capital: capitalBonus,
+    armor: Math.min(0.12, Math.sqrt(Math.max(0, defender.stats.armor)) * 0.035)
   };
 
-  return { terrainKey, terrain, support, attackerFactors, defenderFactors };
-}
+  const attackerMultiplier = clamp(1 + sumBonuses(attackerBonuses), 0.78, 1.38);
+  const defenderMultiplier = clamp(1 + sumBonuses(defenderBonuses), 0.78, 1.48);
 
-function multiplyFactors(factors) {
-  return Object.values(factors).reduce((product, value) => product * value, 1);
+  return {
+    terrainKey,
+    terrain,
+    support,
+    attackerBonuses,
+    defenderBonuses,
+    attackerMultiplier,
+    defenderMultiplier
+  };
 }
 
 function estimateBattleOdds(room, battle) {
@@ -614,11 +740,13 @@ function estimateBattleOdds(room, battle) {
     battle.from,
     battle.target
   );
-  const localShare = clamp(0.16 + countTiles(room, battle.defenderIndex) / 900 + defender.stats.logistics * 0.012, 0.17, 0.34);
-  const defenderForce = Math.min(defender.stats.army, Math.max(1, Math.round(defender.stats.army * localShare)));
-  const attackScore = battle.committed * multiplyFactors(factors.attackerFactors);
-  const defenseScore = defenderForce * multiplyFactors(factors.defenderFactors);
-  return Math.round(clamp((attackScore / Math.max(1, attackScore + defenseScore)) * 100, 12, 88));
+  const defenderForce = Math.min(
+    defender.stats.army,
+    Math.max(defender.stats.army > 0 ? 1 : 0, Math.round(defender.stats.army * defenderLocalShare(defender)))
+  );
+  const attackScore = battle.committed * factors.attackerMultiplier;
+  const defenseScore = defenderForce * factors.defenderMultiplier;
+  return Math.round(clamp((attackScore / Math.max(1, attackScore + defenseScore)) * 100, 15, 85));
 }
 
 function resolveBattle(room, battle, selectedCell) {
@@ -653,11 +781,7 @@ function resolveBattle(room, battle, selectedCell) {
   const committed = clamp(battle.committed, 1, attacker.stats.army);
   attacker.stats.army -= committed;
 
-  const localShare = clamp(
-    0.16 + countTiles(room, battle.defenderIndex) / 900 + defender.stats.logistics * 0.012,
-    0.17,
-    0.34
-  );
+  const localShare = defenderLocalShare(defender);
   let attackerForce = committed;
   let defenderForce = Math.min(
     defender.stats.army,
@@ -674,13 +798,13 @@ function resolveBattle(room, battle, selectedCell) {
     battle.from,
     battle.target
   );
-  const attackerBase = multiplyFactors(factors.attackerFactors);
-  const defenderBase = multiplyFactors(factors.defenderFactors);
+  const attackerBase = factors.attackerMultiplier;
+  const defenderBase = factors.defenderMultiplier;
   const rounds = [];
 
   for (let roundNumber = 1; roundNumber <= 3 && attackerForce > 0 && defenderForce > 0; roundNumber++) {
-    const attackerRoll = randomBetween(0.85, 1.15);
-    const defenderRoll = randomBetween(0.85, 1.15);
+    const attackerRoll = randomBetween(0.92, 1.08);
+    const defenderRoll = randomBetween(0.92, 1.08);
     const attackerPower = attackerForce * attackerBase * attackerRoll;
     const defenderPower = defenderForce * defenderBase * defenderRoll;
     const powerRatio = attackerPower / Math.max(defenderPower, 1);
@@ -689,11 +813,11 @@ function resolveBattle(room, battle, selectedCell) {
     const defenderLossRate = clamp(0.12 + powerRatio * 0.1, 0.09, 0.39);
     const attackerLoss = Math.min(
       attackerForce,
-      Math.max(1, Math.round(attackerForce * attackerLossRate * randomBetween(0.86, 1.14)))
+      Math.max(1, Math.round(attackerForce * attackerLossRate * randomBetween(0.93, 1.07)))
     );
     const defenderLoss = Math.min(
       defenderForce,
-      Math.max(1, Math.round(defenderForce * defenderLossRate * randomBetween(0.86, 1.14)))
+      Math.max(1, Math.round(defenderForce * defenderLossRate * randomBetween(0.93, 1.07)))
     );
 
     attackerForce = Math.max(0, attackerForce - attackerLoss);
@@ -712,7 +836,7 @@ function resolveBattle(room, battle, selectedCell) {
   const finalAttackScore = attackerForce * attackerBase * randomBetween(0.95, 1.05);
   const finalDefenseScore = defenderForce * defenderBase * randomBetween(0.95, 1.05);
   const scoreRatio = finalAttackScore / Math.max(finalDefenseScore, 1);
-  const attackerWins = attackerForce >= 3 && (defenderForce === 0 || scoreRatio > 1.08);
+  const attackerWins = attackerForce >= 3 && (defenderForce === 0 || scoreRatio > 1.03);
   let outcome = 'Failed assault';
   let capturedCapital = false;
   let occupationLoss = 0;
@@ -790,10 +914,13 @@ function resolveBattle(room, battle, selectedCell) {
     attackerName: attacker.name,
     defenderName: defender.name,
     modifiers: {
-      attackerSupply: Math.round(factors.attackerFactors.supply * 100),
-      terrainDefense: Math.round(factors.defenderFactors.terrain * 100),
-      fortification: Math.round(factors.defenderFactors.fortification * 100),
-      armorDefense: Math.round(factors.defenderFactors.armor * 100)
+      attackerTotal: Math.round((factors.attackerMultiplier - 1) * 100),
+      defenderTotal: Math.round((factors.defenderMultiplier - 1) * 100),
+      attackerSupport: Math.round((factors.attackerBonuses.support + factors.attackerBonuses.logistics + factors.attackerBonuses.bridge) * 100),
+      terrainDefense: Math.round(factors.defenderBonuses.terrain * 100),
+      fortification: Math.round(factors.defenderBonuses.fortification * 100),
+      armorDefense: Math.round(factors.defenderBonuses.armor * 100),
+      capitalDefense: Math.round(factors.defenderBonuses.capital * 100)
     }
   });
   emitRoom(room);
@@ -1015,23 +1142,24 @@ io.on('connection', socket => {
   socket.on('buyUpgrade', ({ type }, callback) => {
     const room = rooms.get(socket.data.roomCode);
     if (!room || room.status !== 'playing') return callback?.({ ok: false, error: 'Game not available.' });
-    const playerIndex = room.players.findIndex(player => player.id === socket.id);
-    if (playerIndex !== room.turnIndex) return callback?.({ ok: false, error: 'Buy upgrades on your turn.' });
-    if (room.pendingBattle) return callback?.({ ok: false, error: 'Finish the battle first.' });
+    if (room.pendingBattle) return callback?.({ ok: false, error: 'Finish the current battle before buying upgrades.' });
 
+    const playerIndex = room.players.findIndex(player => player.id === socket.id);
     const player = room.players[playerIndex];
+    if (!player || player.defeated || countTiles(room, playerIndex) === 0) {
+      return callback?.({ ok: false, error: 'Only active players can buy upgrades.' });
+    }
+
     const offers = getUpgradeOffers(player);
     const offer = offers[type];
     if (!offer) return callback?.({ ok: false, error: 'Unknown upgrade.' });
-
-    const limits = {
-      efficiency: player.stats.efficiency >= 120,
-      technology: player.stats.technology >= 10,
-      logistics: player.stats.logistics >= 8,
-      fortification: player.stats.fortification >= 8
-    };
-    if (limits[type]) return callback?.({ ok: false, error: 'That upgrade is already at maximum level.' });
-    if (player.stats.money < offer.cost) return callback?.({ ok: false, error: 'Not enough money.' });
+    if (offer.maxed) return callback?.({ ok: false, error: `${offer.label} is already at maximum level.` });
+    if (player.stats.money < offer.cost) {
+      return callback?.({
+        ok: false,
+        error: `You need $${offer.cost - player.stats.money} more for ${offer.label.toLowerCase()}.`
+      });
+    }
 
     player.stats.money -= offer.cost;
     player.upgradeLevels[type] += 1;
@@ -1044,7 +1172,7 @@ io.on('connection', socket => {
 
     addLog(room, `${player.name} purchased a ${offer.label.toLowerCase()} upgrade for $${offer.cost}.`);
     emitRoom(room);
-    callback?.({ ok: true });
+    callback?.({ ok: true, label: offer.label, cost: offer.cost, gain: offer.gain });
   });
 
   socket.on('sendChatMessage', ({ text }, callback) => {
