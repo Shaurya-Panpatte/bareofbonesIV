@@ -12,14 +12,15 @@ let myId = null;
 let selected = null;
 let hovered = null;
 let armorChallengeKey = null;
+let shopStatusTimer = null;
 
 const TILE = 40;
 const WATER = '#07152a';
 const TERRAIN_META = {
   plains: { name: 'Plains', defense: 1 },
-  forest: { name: 'Forest', defense: 1.14 },
-  mountain: { name: 'Mountain', defense: 1.28 },
-  bridge: { name: 'Bridge', defense: 1.2 }
+  forest: { name: 'Forest', defense: 1.06 },
+  mountain: { name: 'Mountain', defense: 1.12 },
+  bridge: { name: 'Bridge', defense: 1.08 }
 };
 
 socket.on('connect', () => {
@@ -131,7 +132,11 @@ el('resignBtn').addEventListener('click', () => {
 document.querySelectorAll('[data-upgrade]').forEach(button => {
   button.addEventListener('click', () => {
     socket.emit('buyUpgrade', { type: button.dataset.upgrade }, result => {
-      if (!result?.ok) setSelectionMessage(result?.error || 'Upgrade failed.', true);
+      if (!result?.ok) {
+        setShopStatus(result?.error || 'Upgrade failed.', true);
+        return;
+      }
+      setShopStatus(`Purchased ${result.label} for $${result.cost}.`);
     });
   });
 });
@@ -143,6 +148,35 @@ el('armyCommit').addEventListener('input', event => {
 
 el('closeBattleBtn').addEventListener('click', () => {
   el('battleModal').classList.add('hidden');
+});
+
+el('helpBtn').addEventListener('click', () => {
+  el('helpModal').classList.remove('hidden');
+});
+
+el('closeHelpBtn').addEventListener('click', () => {
+  el('helpModal').classList.add('hidden');
+});
+
+el('balanceBtn').addEventListener('click', () => {
+  renderStartingBalance();
+  el('balanceModal').classList.remove('hidden');
+});
+
+el('closeBalanceBtn').addEventListener('click', () => {
+  el('balanceModal').classList.add('hidden');
+});
+
+for (const modalId of ['helpModal', 'balanceModal']) {
+  el(modalId).addEventListener('click', event => {
+    if (event.target === el(modalId)) el(modalId).classList.add('hidden');
+  });
+}
+
+document.addEventListener('keydown', event => {
+  if (event.key !== 'Escape') return;
+  el('helpModal').classList.add('hidden');
+  el('balanceModal').classList.add('hidden');
 });
 
 el('chatForm').addEventListener('submit', event => {
@@ -186,6 +220,7 @@ function renderState() {
   homeView.classList.toggle('hidden', Boolean(state));
   lobbyView.classList.toggle('hidden', !state || state.status !== 'lobby');
   gameView.classList.toggle('hidden', !state || !['playing', 'finished'].includes(state.status));
+  el('balanceBtn').classList.toggle('hidden', !state?.startingBalance);
 
   if (!state) return;
   if (state.status === 'lobby') renderLobby();
@@ -238,7 +273,7 @@ function renderGame() {
 
   if (me) {
     renderStats(me);
-    renderUpgradeShop(me, myTurn);
+    renderUpgradeShop(me);
 
     const armySlider = el('armyCommit');
     const availableArmy = Math.max(0, me.stats.army);
@@ -249,6 +284,7 @@ function renderGame() {
     el('armyCommitValue').textContent = armySlider.value;
   }
 
+  renderPlayerIntel();
   renderLog();
   renderChat();
   drawMap();
@@ -311,7 +347,172 @@ function renderStats(me) {
   `).join('');
 }
 
-function renderUpgradeShop(me, myTurn) {
+function renderPlayerIntel() {
+  const container = el('playerIntel');
+  if (!state?.players?.length) {
+    container.innerHTML = '<p class="muted">No player data available.</p>';
+    return;
+  }
+
+  container.innerHTML = state.players.map((player, index) => {
+    const isMe = player.id === myId;
+    const isCurrent = state.status === 'playing' && index === state.turnIndex;
+    const upgrades = player.upgradeLevels || {};
+    const baseCombatModifier = Math.round(sumBonuses(sharedCombatBonuses(player)) * 100);
+    const localDefenseTroops = Math.min(
+      player.stats.army,
+      Math.max(player.stats.army > 0 ? 1 : 0, Math.round(player.stats.army * localDefenseShare(player)))
+    );
+    const status = player.resigned
+      ? 'Resigned'
+      : player.defeated
+        ? 'Eliminated'
+        : player.connected
+          ? 'Active'
+          : 'Disconnected';
+
+    return `
+      <article class="intel-card ${isMe ? 'is-me' : ''} ${isCurrent ? 'is-current' : ''} ${player.defeated ? 'is-defeated' : ''}">
+        <div class="intel-player-heading">
+          <span class="player-dot" style="background:${safeColor(player.color)};color:${safeColor(player.color)}"></span>
+          <div>
+            <strong>${escapeHtml(player.name)}${isMe ? ' (You)' : ''}</strong>
+            <small>Player ${index + 1} · ${status}${isCurrent ? ' · Current turn' : ''}</small>
+          </div>
+        </div>
+
+        <div class="intel-key-numbers">
+          <div><span>Troops</span><strong>${player.stats.army}</strong></div>
+          <div><span>Local defenders</span><strong>≈${localDefenseTroops}</strong></div>
+          <div><span>Territory</span><strong>${player.tileCount}</strong></div>
+          <div><span>Base combat</span><strong>${formatSignedPercent(baseCombatModifier)}</strong></div>
+        </div>
+
+        <div class="intel-current-stats">
+          <span>Efficiency <strong>${player.stats.efficiency}%</strong></span>
+          <span>Technology <strong>Lv. ${player.stats.technology}</strong></span>
+          <span>Armor <strong>${player.stats.armor}</strong></span>
+          <span>Logistics <strong>Lv. ${player.stats.logistics}</strong></span>
+          <span>Fortification <strong>Lv. ${player.stats.fortification}</strong></span>
+          <span>Morale <strong>${player.stats.morale}</strong></span>
+          <span>Exhaustion <strong>${player.stats.warExhaustion}%</strong></span>
+          <span>Money <strong>$${player.stats.money}</strong></span>
+        </div>
+
+        <div class="intel-upgrade-block">
+          <small>Purchased upgrade levels</small>
+          <div class="intel-upgrade-levels">
+            <span>Army Lv.${upgrades.army ?? 0}</span>
+            <span>Efficiency Lv.${upgrades.efficiency ?? 0}</span>
+            <span>Technology Lv.${upgrades.technology ?? 0}</span>
+            <span>Armor Lv.${upgrades.armor ?? 0}</span>
+            <span>Logistics Lv.${upgrades.logistics ?? 0}</span>
+            <span>Fortification Lv.${upgrades.fortification ?? 0}</span>
+          </div>
+        </div>
+      </article>
+    `;
+  }).join('');
+}
+
+function renderStartingBalance() {
+  const container = el('startingBalanceContent');
+  const audit = state?.startingBalance;
+  if (!audit?.players?.length) {
+    container.innerHTML = '<div class="help-callout"><strong>No audit available</strong><p>The starting balance audit appears after the host starts the game.</p></div>';
+    return;
+  }
+
+  const equalityClass = audit.allCoreStatsEqual ? 'audit-good' : 'audit-warning';
+  const equalityText = audit.allCoreStatsEqual
+    ? 'All tracked starting combat stats are identical.'
+    : 'At least one tracked starting combat stat differs.';
+  const upgradesText = audit.allUpgradeLevelsEqual
+    ? 'Every purchased-upgrade level started at 0.'
+    : 'At least one purchased-upgrade level was not 0.';
+
+  const rows = audit.players.map(player => `
+    <tr>
+      <td><span class="audit-player"><i style="background:${safeColor(player.color)}"></i>${escapeHtml(player.name)}</span></td>
+      <td>${player.turnOrder}</td>
+      <td>${player.stats.army}${formatAuditDelta(player.deviations.army)}</td>
+      <td>${player.stats.efficiency}%${formatAuditDelta(player.deviations.efficiency)}</td>
+      <td>Lv.${player.stats.logistics}${formatAuditDelta(player.deviations.logistics)}</td>
+      <td>Lv.${player.stats.fortification}${formatAuditDelta(player.deviations.fortification)}</td>
+      <td>Lv.${player.stats.technology}${formatAuditDelta(player.deviations.technology)}</td>
+      <td>${player.stats.armor}${formatAuditDelta(player.deviations.armor)}</td>
+      <td>${player.tileCount}${formatAuditDelta(player.deviations.tileCount)}</td>
+      <td>+${player.terrain.averageDefenseBonus}%${formatAuditDelta(player.deviations.averageTerrainDefense, '%')}</td>
+      <td>${escapeHtml(terrainDisplayName(player.capitalTerrain))}</td>
+    </tr>
+  `).join('');
+
+  const terrainCards = audit.players.map(player => `
+    <article class="audit-terrain-card">
+      <div class="intel-player-heading">
+        <span class="player-dot" style="background:${safeColor(player.color)};color:${safeColor(player.color)}"></span>
+        <div><strong>${escapeHtml(player.name)}</strong><small>Starting terrain mix</small></div>
+      </div>
+      <div class="audit-terrain-grid">
+        <span>Plains <strong>${player.terrain.plains}</strong></span>
+        <span>Forest <strong>${player.terrain.forest}</strong></span>
+        <span>Mountain <strong>${player.terrain.mountain}</strong></span>
+        <span>Bridge <strong>${player.terrain.bridge}</strong></span>
+      </div>
+      <p>${startingDifferenceSummary(player)}</p>
+    </article>
+  `).join('');
+
+  container.innerHTML = `
+    <div class="audit-summary ${equalityClass}">
+      <strong>${equalityText}</strong>
+      <span>${upgradesText}</span>
+      <span>Map-generated differences can remain in territory size, terrain mix, capital terrain, and turn order.</span>
+    </div>
+
+    <div class="audit-table-wrap">
+      <table class="audit-table">
+        <thead>
+          <tr>
+            <th>Player</th><th>Turn</th><th>Army</th><th>Efficiency</th><th>Logistics</th><th>Fortification</th><th>Technology</th><th>Armor</th><th>Tiles</th><th>Avg terrain defense</th><th>Capital</th>
+          </tr>
+        </thead>
+        <tbody>${rows}</tbody>
+      </table>
+    </div>
+
+    <p class="audit-legend">Small values in parentheses show the difference from the player average at the exact moment the game started. This audit is frozen and does not change after upgrades or battles.</p>
+    <div class="audit-terrain-cards">${terrainCards}</div>
+  `;
+}
+
+function formatAuditDelta(value, suffix = '') {
+  const numeric = Number(value) || 0;
+  if (Math.abs(numeric) < 0.05) return '<small class="audit-delta equal">(equal)</small>';
+  return `<small class="audit-delta ${numeric > 0 ? 'positive' : 'negative'}">(${numeric > 0 ? '+' : ''}${numeric}${suffix})</small>`;
+}
+
+function terrainDisplayName(key) {
+  return TERRAIN_META[key]?.name || 'Plains';
+}
+
+function startingDifferenceSummary(player) {
+  const statDifferences = ['army', 'efficiency', 'logistics', 'fortification', 'technology', 'armor']
+    .filter(stat => Math.abs(Number(player.deviations?.[stat]) || 0) >= 0.05);
+  const statText = statDifferences.length
+    ? `Starting stat differences: ${statDifferences.join(', ')}.`
+    : 'No starting army or upgrade-stat advantage.';
+  const tileDelta = Number(player.deviations?.tileCount) || 0;
+  const terrainDelta = Number(player.deviations?.averageTerrainDefense) || 0;
+  return `${statText} Tiles ${signedNumber(tileDelta)} vs average; terrain defense ${signedNumber(terrainDelta)} percentage points vs average.`;
+}
+
+function signedNumber(value) {
+  const rounded = Math.round((Number(value) || 0) * 10) / 10;
+  return `${rounded >= 0 ? '+' : ''}${rounded}`;
+}
+
+function renderUpgradeShop(me) {
   const labels = {
     army: offer => `+${offer.gain} Army`,
     efficiency: offer => `+${offer.gain} Efficiency`,
@@ -321,6 +522,7 @@ function renderUpgradeShop(me, myTurn) {
     fortification: offer => `+${offer.gain} Fortification`
   };
 
+  const active = !me.defeated && me.tileCount > 0 && state.status === 'playing';
   document.querySelectorAll('[data-upgrade]').forEach(button => {
     const type = button.dataset.upgrade;
     const offer = me.upgradeOffers[type];
@@ -329,15 +531,30 @@ function renderUpgradeShop(me, myTurn) {
     button.querySelector('.upgrade-name').textContent = labels[type](offer);
     button.querySelector('.upgrade-cost').textContent = `$${offer.cost}`;
 
-    const atMaximum =
-      (type === 'efficiency' && me.stats.efficiency >= 120) ||
-      (type === 'technology' && me.stats.technology >= 10) ||
-      (type === 'logistics' && me.stats.logistics >= 8) ||
-      (type === 'fortification' && me.stats.fortification >= 8);
+    const unaffordable = me.stats.money < offer.cost;
+    const blockedByBattle = Boolean(state.pendingBattle);
+    button.disabled = !active || blockedByBattle || offer.maxed;
+    button.classList.toggle('unaffordable', unaffordable && !button.disabled);
 
-    button.disabled = !myTurn || Boolean(state.pendingBattle) || atMaximum || me.stats.money < offer.cost;
-    button.title = atMaximum ? 'Maximum level reached' : '';
+    if (offer.maxed) button.title = 'Maximum level reached';
+    else if (blockedByBattle) button.title = 'Finish the current battle first';
+    else if (unaffordable) button.title = `You need $${offer.cost - me.stats.money} more`;
+    else button.title = 'Available now';
   });
+}
+
+function setShopStatus(message, error = false) {
+  const status = el('shopStatus');
+  status.textContent = message;
+  status.classList.toggle('error', error);
+  status.classList.toggle('success', !error && Boolean(message));
+  clearTimeout(shopStatusTimer);
+  if (message) {
+    shopStatusTimer = setTimeout(() => {
+      status.textContent = '';
+      status.classList.remove('error', 'success');
+    }, 3200);
+  }
 }
 
 function renderLog() {
@@ -463,19 +680,38 @@ function isAdjacent(a, b) {
   return Math.abs(a.x - b.x) + Math.abs(a.y - b.y) === 1;
 }
 
+function sharedCombatBonuses(player) {
+  return {
+    technology: (player.stats.technology - 2) * 0.035,
+    efficiency: (player.stats.efficiency - 85) * 0.0025,
+    morale: (player.stats.morale - 100) * 0.003,
+    exhaustion: -player.stats.warExhaustion * 0.0015
+  };
+}
+
+function sumBonuses(bonuses) {
+  return Object.values(bonuses).reduce((sum, value) => sum + value, 0);
+}
+
+function localDefenseShare(player) {
+  return clamp(0.22 + Math.max(0, player.stats.logistics - 1) * 0.01, 0.22, 0.29);
+}
+
 function updateOddsPreview(target) {
   const preview = el('oddsPreview');
   if (!state || !selected || !target || !inBounds(target) || !isAdjacent(selected, target)) {
-    preview.innerHTML = '<span>Battle estimate</span><strong>Hover an enemy tile</strong>';
+    preview.innerHTML = '<span>Battle estimate</span><strong>Hover an enemy tile</strong><small>Stats, terrain and committed troops are included.</small>';
     preview.className = 'odds-preview';
+    preview.title = '';
     return;
   }
 
   const attackerIndex = getMyIndex();
   const defenderIndex = state.map[target.y][target.x];
-  if (defenderIndex === null || defenderIndex === attackerIndex) {
-    preview.innerHTML = '<span>Battle estimate</span><strong>Hover an enemy tile</strong>';
+  if (defenderIndex === null || defenderIndex === attackerIndex || attackerIndex < 0) {
+    preview.innerHTML = '<span>Battle estimate</span><strong>Hover an enemy tile</strong><small>Stats, terrain and committed troops are included.</small>';
     preview.className = 'odds-preview';
+    preview.title = '';
     return;
   }
 
@@ -488,43 +724,49 @@ function updateOddsPreview(target) {
   const isDefenderCapital = state.capitals?.[defenderIndex]?.x === target.x &&
     state.capitals?.[defenderIndex]?.y === target.y;
 
-  const attackerFactor =
-    (1 + attacker.stats.technology * 0.055) *
-    (0.72 + attacker.stats.efficiency / 280) *
-    (0.84 + attacker.stats.morale / 500) *
-    (1 - attacker.stats.warExhaustion * 0.003) *
-    clamp(0.86 + support * 0.045 + attacker.stats.logistics * 0.022, 0.86, 1.14) *
-    (terrainKey === 'bridge' ? 0.92 : 1);
+  const attackerBonuses = {
+    ...sharedCombatBonuses(attacker),
+    support: support * 0.012,
+    logistics: Math.max(0, attacker.stats.logistics - 1) * 0.012,
+    bridge: terrainKey === 'bridge' ? -0.04 : 0
+  };
+  const defenderBonuses = {
+    ...sharedCombatBonuses(defender),
+    terrain: terrain.defense - 1,
+    home: 0.03,
+    fortification: Math.max(0, defender.stats.fortification - 1) * 0.018,
+    capital: isDefenderCapital ? 0.08 : 0,
+    armor: Math.min(0.12, Math.sqrt(Math.max(0, defender.stats.armor)) * 0.035)
+  };
 
+  const attackerFactor = clamp(1 + sumBonuses(attackerBonuses), 0.78, 1.38);
+  const defenderFactor = clamp(1 + sumBonuses(defenderBonuses), 0.78, 1.48);
   const defenderForce = Math.min(
     defender.stats.army,
-    Math.max(1, Math.round(defender.stats.army * clamp(
-      0.16 + defender.tileCount / 900 + defender.stats.logistics * 0.012,
-      0.17,
-      0.34
-    )))
+    Math.max(defender.stats.army > 0 ? 1 : 0, Math.round(defender.stats.army * localDefenseShare(defender)))
   );
-  const defenderFactor =
-    (1 + defender.stats.technology * 0.055) *
-    (0.72 + defender.stats.efficiency / 280) *
-    (0.84 + defender.stats.morale / 500) *
-    (1 - defender.stats.warExhaustion * 0.003) *
-    terrain.defense *
-    1.08 *
-    (1 + Math.min(0.3, defender.stats.fortification * 0.045)) *
-    (1 + Math.min(0.32, Math.sqrt(Math.max(0, defender.stats.armor)) * 0.075)) *
-    (isDefenderCapital ? 1.18 : 1);
-
   const attackScore = committed * attackerFactor;
   const defenseScore = defenderForce * defenderFactor;
-  const odds = Math.round(clamp((attackScore / Math.max(1, attackScore + defenseScore)) * 100, 12, 88));
+  const odds = Math.round(clamp((attackScore / Math.max(1, attackScore + defenseScore)) * 100, 15, 85));
   const rating = odds >= 62 ? 'Favorable' : odds >= 45 ? 'Risky' : 'Unfavorable';
+  const attackerTotal = Math.round((attackerFactor - 1) * 100);
+  const defenderTotal = Math.round((defenderFactor - 1) * 100);
+  const terrainBonus = Math.round(defenderBonuses.terrain * 100);
+  const fortBonus = Math.round(defenderBonuses.fortification * 100);
+  const armorBonus = Math.round(defenderBonuses.armor * 100);
+  const capitalBonus = Math.round(defenderBonuses.capital * 100);
 
   preview.innerHTML = `
     <span>${escapeHtml(terrain.name)}${isDefenderCapital ? ' · Capital' : ''}</span>
     <strong>${odds}% · ${rating}</strong>
+    <small>Attack ${formatSignedPercent(attackerTotal)} · Defense ${formatSignedPercent(defenderTotal)}</small>
   `;
+  preview.title = `Defender force: ${defenderForce}. Terrain +${terrainBonus}%, fortification +${fortBonus}%, armor +${armorBonus}%, capital +${capitalBonus}%.`;
   preview.className = `odds-preview ${odds >= 62 ? 'good' : odds >= 45 ? 'risky' : 'bad'}`;
+}
+
+function formatSignedPercent(value) {
+  return `${value >= 0 ? '+' : ''}${value}%`;
 }
 
 function friendlyNeighborCount(tile, playerIndex) {
@@ -785,10 +1027,12 @@ function showBattleResult(result) {
 
   const modifiers = `
     <div class="modifier-row">
-      <span>Supply ${result.modifiers.attackerSupply}%</span>
-      <span>Terrain defense ${result.modifiers.terrainDefense}%</span>
-      <span>Fortification ${result.modifiers.fortification}%</span>
-      <span>Armor defense ${result.modifiers.armorDefense}%</span>
+      <span>Attack total ${formatSignedPercent(result.modifiers.attackerTotal)}</span>
+      <span>Defense total ${formatSignedPercent(result.modifiers.defenderTotal)}</span>
+      <span>Terrain +${result.modifiers.terrainDefense}%</span>
+      <span>Fortification +${result.modifiers.fortification}%</span>
+      <span>Armor +${result.modifiers.armorDefense}%</span>
+      <span>Capital +${result.modifiers.capitalDefense}%</span>
     </div>
   `;
 
