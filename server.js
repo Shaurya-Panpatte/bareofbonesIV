@@ -513,5 +513,5 @@ io.on('connection', socket => {
 });
 
 server.listen(PORT, () => {
-  console.log(`Conquest Grid running at http://localhost:${PORT}`);
+  console.log(`Server listening on port ${PORT}`);
 });
