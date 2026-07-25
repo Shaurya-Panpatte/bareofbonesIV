@@ -101,6 +101,33 @@ el('endTurnBtn').addEventListener('click', () => {
   });
 });
 
+el('drawBtn').addEventListener('click', () => {
+  if (!state) return;
+  const hasVoted = (state.drawVotes || []).includes(myId);
+  const prompt = hasVoted
+    ? 'Withdraw your vote for a draw?'
+    : 'Offer or accept a draw? The game ends only when every active connected player accepts.';
+  if (!window.confirm(prompt)) return;
+
+  el('gameActionStatus').textContent = '';
+  socket.emit('toggleDrawVote', {}, result => {
+    if (!result?.ok) {
+      el('gameActionStatus').textContent = result?.error || 'Could not update the draw vote.';
+    }
+  });
+});
+
+el('resignBtn').addEventListener('click', () => {
+  if (!window.confirm('Resign from this game? You will be eliminated immediately and this cannot be undone.')) return;
+
+  el('gameActionStatus').textContent = '';
+  socket.emit('resignGame', {}, result => {
+    if (!result?.ok) {
+      el('gameActionStatus').textContent = result?.error || 'Could not resign.';
+    }
+  });
+});
+
 document.querySelectorAll('[data-upgrade]').forEach(button => {
   button.addEventListener('click', () => {
     socket.emit('buyUpgrade', { type: button.dataset.upgrade }, result => {
@@ -187,10 +214,27 @@ function renderGame() {
   const myTurn = current?.id === myId && state.status === 'playing';
 
   el('roundLabel').textContent = state.round;
-  el('turnLabel').textContent = current
-    ? `${current.name}'s turn${myTurn ? ' — you' : ''}${current.connected ? '' : ' — disconnected'}`
-    : 'Game over';
+  el('turnLabel').textContent = state.status === 'finished'
+    ? 'Game over'
+    : current
+      ? `${current.name}'s turn${myTurn ? ' — you' : ''}${current.connected ? '' : ' — disconnected'}`
+      : 'Waiting…';
   el('endTurnBtn').disabled = !myTurn || Boolean(state.pendingBattle);
+
+  const activeDrawPlayers = state.players.filter(player =>
+    player.connected && !player.defeated && player.tileCount > 0
+  );
+  const drawVotes = state.drawVotes || [];
+  const hasDrawVote = drawVotes.includes(myId);
+  const meIsActive = Boolean(me && !me.defeated && me.tileCount > 0);
+  const drawButton = el('drawBtn');
+  drawButton.disabled = state.status !== 'playing' || !meIsActive || Boolean(state.pendingBattle) || activeDrawPlayers.length < 2;
+  drawButton.textContent = hasDrawVote
+    ? `Withdraw draw (${drawVotes.length}/${activeDrawPlayers.length})`
+    : drawVotes.length > 0
+      ? `Accept draw (${drawVotes.length}/${activeDrawPlayers.length})`
+      : 'Offer draw';
+  el('resignBtn').disabled = state.status !== 'playing' || !meIsActive || Boolean(state.pendingBattle);
 
   if (me) {
     renderStats(me);
@@ -222,15 +266,31 @@ function renderGame() {
   }
 
   if (state.status === 'finished') {
-    const winner = state.players.find(player => player.tileCount > 0 && !player.defeated);
+    const result = state.gameResult;
+    const winner = result?.winnerId
+      ? state.players.find(player => player.id === result.winnerId)
+      : state.players.find(player => player.tileCount > 0 && !player.defeated);
+    const headline = result?.type === 'draw'
+      ? 'Game drawn 🤝'
+      : winner
+        ? `${escapeHtml(winner.name)} wins 👑`
+        : 'Game over';
+    const detail = result?.message ? `<small>${escapeHtml(result.message)}</small>` : '';
     el('gameOverOverlay').classList.remove('hidden');
-    el('gameOverOverlay').innerHTML = `<div>${winner ? `${escapeHtml(winner.name)} wins 👑` : 'Game over'}</div>`;
+    el('gameOverOverlay').innerHTML = `<div>${headline}${detail}</div>`;
   } else {
     el('gameOverOverlay').classList.add('hidden');
   }
 
-  if (!myTurn) setSelectionMessage(`Waiting for ${current?.name || 'the next player'}…`);
-  else if (!selected) setSelectionMessage('Select one of your border tiles');
+  if (state.status === 'finished') {
+    setSelectionMessage(state.gameResult?.type === 'draw' ? 'The game ended in a draw.' : 'The game is over.');
+  } else if (me?.defeated) {
+    setSelectionMessage(me.resigned ? 'You resigned. You can still watch and chat.' : 'You have been eliminated. You can still watch and chat.');
+  } else if (!myTurn) {
+    setSelectionMessage(`Waiting for ${current?.name || 'the next player'}…`);
+  } else if (!selected) {
+    setSelectionMessage('Select one of your border tiles');
+  }
 }
 
 function renderStats(me) {
