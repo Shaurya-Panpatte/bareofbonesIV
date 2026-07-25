@@ -379,6 +379,17 @@ button:disabled { opacity: 0.4; }
 }
 
 .upgrade-cost { color: #8fb1ff; }
+.shop button.unaffordable { border-color: rgba(246, 185, 75, 0.26); }
+.shop button.unaffordable .upgrade-cost { color: #ffd98b; }
+.shop-status {
+  min-height: 18px;
+  margin: 3px 2px 0;
+  font-size: 0.7rem;
+  line-height: 1.35;
+  color: var(--muted);
+}
+.shop-status.error { color: #ff90a3; }
+.shop-status.success { color: #73e2ad; }
 .end-turn { width: 100%; margin-top: 8px; }
 
 .game-actions {
@@ -851,4 +862,471 @@ canvas {
   .battle-summary span { text-align: left; }
   .battle-round { grid-template-columns: 1fr; }
   .terrain-legend { gap: 8px 12px; }
+}
+
+.odds-preview small { display:block; margin-top:4px; color:var(--muted); font-size:.66rem; line-height:1.25; }
+
+/* Player analysis, starting balance audit, and help guide */
+.topbar-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 9px;
+  flex-wrap: wrap;
+}
+
+.compact-action {
+  padding: 8px 11px;
+  border-radius: 999px;
+  color: #cbd5e6;
+  font-size: 0.76rem;
+}
+
+.player-intel-section {
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.player-intel {
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+  max-height: 360px;
+  overflow: auto;
+  padding-right: 3px;
+  scrollbar-width: thin;
+}
+
+.intel-card {
+  padding: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.075);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.035);
+}
+
+.intel-card.is-me {
+  border-color: rgba(79, 140, 255, 0.34);
+  background: rgba(79, 140, 255, 0.065);
+}
+
+.intel-card.is-current {
+  box-shadow: inset 3px 0 0 var(--warning);
+}
+
+.intel-card.is-defeated {
+  opacity: 0.58;
+}
+
+.intel-player-heading {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  min-width: 0;
+}
+
+.intel-player-heading > div {
+  min-width: 0;
+}
+
+.intel-player-heading strong,
+.intel-player-heading small {
+  display: block;
+}
+
+.intel-player-heading strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 0.82rem;
+}
+
+.intel-player-heading small {
+  margin-top: 2px;
+  color: var(--muted);
+  font-size: 0.64rem;
+}
+
+.intel-key-numbers {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
+  margin-top: 9px;
+}
+
+.intel-key-numbers div {
+  padding: 7px;
+  border-radius: 8px;
+  background: rgba(5, 8, 15, 0.32);
+}
+
+.intel-key-numbers span,
+.intel-key-numbers strong {
+  display: block;
+}
+
+.intel-key-numbers span {
+  color: var(--muted);
+  font-size: 0.6rem;
+}
+
+.intel-key-numbers strong {
+  margin-top: 2px;
+  font-size: 0.78rem;
+}
+
+.intel-current-stats {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 5px 8px;
+  margin-top: 9px;
+  color: #aebad0;
+  font-size: 0.64rem;
+}
+
+.intel-current-stats span {
+  display: flex;
+  justify-content: space-between;
+  gap: 5px;
+  min-width: 0;
+}
+
+.intel-current-stats strong {
+  color: #eef3ff;
+  white-space: nowrap;
+}
+
+.intel-upgrade-block {
+  margin-top: 9px;
+  padding-top: 8px;
+  border-top: 1px solid rgba(255, 255, 255, 0.065);
+}
+
+.intel-upgrade-block > small {
+  display: block;
+  margin-bottom: 6px;
+  color: #8fa5ce;
+  font-size: 0.61rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.intel-upgrade-levels {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+
+.intel-upgrade-levels span {
+  padding: 4px 6px;
+  border-radius: 999px;
+  background: rgba(124, 92, 255, 0.1);
+  color: #c8c2ff;
+  font-size: 0.58rem;
+}
+
+.info-modal-card {
+  width: min(1050px, 97vw);
+}
+
+.balance-modal-card {
+  width: min(1280px, 98vw);
+}
+
+.modal-heading-row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 20px;
+  margin-bottom: 18px;
+}
+
+.modal-heading-row h2 {
+  margin-bottom: 0;
+}
+
+.modal-close {
+  flex: 0 0 auto;
+}
+
+.help-callout,
+.audit-summary {
+  padding: 14px 16px;
+  border-radius: 13px;
+  background: rgba(64, 201, 139, 0.075);
+  border: 1px solid rgba(64, 201, 139, 0.22);
+}
+
+.help-callout strong,
+.audit-summary strong,
+.audit-summary span {
+  display: block;
+}
+
+.help-callout p {
+  margin: 5px 0 0;
+  color: #b9c7d9;
+  font-size: 0.82rem;
+  line-height: 1.55;
+}
+
+.help-section {
+  margin-top: 25px;
+}
+
+.help-section h3 {
+  margin-bottom: 12px;
+  font-size: 1rem;
+}
+
+.help-upgrade-grid,
+.rule-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.help-upgrade-card,
+.rule-grid > div {
+  padding: 14px;
+  border-radius: 12px;
+  border: 1px solid var(--line);
+  background: rgba(255, 255, 255, 0.035);
+}
+
+.help-upgrade-card h4 {
+  margin: 0 0 7px;
+  font-size: 0.9rem;
+}
+
+.help-upgrade-card p {
+  margin: 0 0 9px;
+  color: #b9c3d5;
+  font-size: 0.78rem;
+  line-height: 1.5;
+}
+
+.help-upgrade-card small {
+  color: #8fb1ff;
+  font-size: 0.68rem;
+}
+
+.rule-grid > div strong,
+.rule-grid > div span {
+  display: block;
+}
+
+.rule-grid > div strong {
+  margin-bottom: 5px;
+  font-size: 0.82rem;
+}
+
+.rule-grid > div span {
+  color: #aeb9cc;
+  font-size: 0.74rem;
+  line-height: 1.45;
+}
+
+.help-footnote,
+.audit-legend {
+  margin: 10px 0 0;
+  color: #aeb9cc;
+  font-size: 0.76rem;
+  line-height: 1.55;
+}
+
+.audit-summary {
+  display: grid;
+  gap: 5px;
+}
+
+.audit-summary strong {
+  font-size: 0.9rem;
+}
+
+.audit-summary span {
+  color: #b8c7d9;
+  font-size: 0.75rem;
+  line-height: 1.4;
+}
+
+.audit-summary.audit-warning {
+  background: rgba(246, 185, 75, 0.08);
+  border-color: rgba(246, 185, 75, 0.28);
+}
+
+.audit-table-wrap {
+  margin-top: 16px;
+  overflow: auto;
+  border: 1px solid var(--line);
+  border-radius: 13px;
+}
+
+.audit-table {
+  width: 100%;
+  min-width: 1080px;
+  border-collapse: collapse;
+  font-size: 0.72rem;
+}
+
+.audit-table th,
+.audit-table td {
+  padding: 10px 9px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.065);
+  text-align: left;
+  white-space: nowrap;
+}
+
+.audit-table th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: #182033;
+  color: #9eacc2;
+  font-size: 0.64rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.audit-table tbody tr:last-child td {
+  border-bottom: 0;
+}
+
+.audit-player {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  font-weight: 750;
+}
+
+.audit-player i {
+  width: 9px;
+  height: 9px;
+  border-radius: 3px;
+  display: inline-block;
+}
+
+.audit-delta {
+  display: block;
+  margin-top: 2px;
+  font-size: 0.58rem;
+}
+
+.audit-delta.equal { color: #72d8a8; }
+.audit-delta.positive { color: #ffd98b; }
+.audit-delta.negative { color: #ff9eae; }
+
+.audit-terrain-cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));
+  gap: 10px;
+  margin-top: 16px;
+}
+
+.audit-terrain-card {
+  padding: 13px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.audit-terrain-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 5px 8px;
+  margin: 10px 0;
+  color: #aeb9cc;
+  font-size: 0.69rem;
+}
+
+.audit-terrain-grid span {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.audit-terrain-grid strong {
+  color: #eef3ff;
+}
+
+.audit-terrain-card p {
+  margin: 0;
+  color: #9eacc2;
+  font-size: 0.68rem;
+  line-height: 1.45;
+}
+
+@media (max-width: 1300px) {
+  .rightbar {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .player-intel-section,
+  .activity-section,
+  .chat-section {
+    min-height: 330px;
+  }
+
+  .player-intel {
+    max-height: 285px;
+  }
+
+  .activity-section {
+    border-left: 1px solid var(--line);
+    padding-left: 16px;
+  }
+
+  .chat-section {
+    border-left: 1px solid var(--line);
+    border-top: 0;
+    padding-left: 16px;
+    padding-top: 0;
+  }
+}
+
+@media (max-width: 900px) {
+  .rightbar {
+    grid-template-columns: 1fr;
+  }
+
+  .player-intel-section,
+  .activity-section,
+  .chat-section {
+    min-height: auto;
+  }
+
+  .player-intel {
+    max-height: 430px;
+  }
+
+  .activity-section,
+  .chat-section {
+    border-left: 0;
+    border-top: 1px solid var(--line);
+    padding-left: 0;
+    padding-top: 14px;
+  }
+
+  .help-upgrade-grid,
+  .rule-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 560px) {
+  .topbar {
+    flex-direction: column;
+  }
+
+  .topbar-actions {
+    justify-content: flex-start;
+  }
+
+  .modal-heading-row {
+    flex-direction: column;
+  }
+
+  .modal-close {
+    align-self: flex-end;
+  }
 }
