@@ -72,6 +72,8 @@
 
         <div id="statsPanel" class="stats-list"></div>
 
+        <section id="myDoctrinePanel" class="doctrine-panel" aria-live="polite"></section>
+
         <div class="shop">
           <div class="shop-heading">
             <h3>Upgrade shop</h3>
@@ -148,7 +150,7 @@
         <section class="player-intel-section">
           <div class="section-heading">
             <h3>Player analysis</h3>
-            <small>Live public troops, stats, and upgrade levels</small>
+            <small>Live doctrines, troops, stats, and exact active effects</small>
           </div>
           <div id="playerIntel" class="player-intel"></div>
         </section>
@@ -195,9 +197,21 @@
       </div>
 
       <div class="help-callout">
-        <strong>No hidden player-order combat buff</strong>
-        <p>Every player starts with the same army, efficiency, technology, armor, logistics, fortification, morale, money, and purchased-upgrade levels. The procedural map can still differ slightly by tile count, terrain mix, capital terrain, and turn order.</p>
+        <strong>Every player receives one unique national doctrine</strong>
+        <p>Doctrines are shuffled when the game starts and assigned without replacement, so no two players in the same match receive the same starting buff. Each doctrine has a visible strength and a visible trade-off; player order does not choose the doctrine.</p>
       </div>
+
+      <section class="help-section">
+        <h3>Unique starting doctrines</h3>
+        <div class="help-upgrade-grid doctrine-help-grid">
+          <article class="help-upgrade-card"><h4>Mass Mobilization</h4><p>Starts with 142 troops. It sacrifices efficiency, armor, and money for immediate military pressure.</p><small>+26 troops · −6 efficiency · −1 armor · −$60</small></article>
+          <article class="help-upgrade-card"><h4>Industrial Engine</h4><p>Starts with 100 efficiency and $760. Its income and combat efficiency are stronger, but its opening army and armor are smaller.</p><small>+14 efficiency · +$80 · −8 troops · −1 armor</small></article>
+          <article class="help-upgrade-card"><h4>Logistics Network</h4><p>Starts at logistics level 3, giving noticeably stronger attack coordination, local defense response, recruitment, supply capacity, and upkeep savings.</p><small>Logistics Lv.3 · −8 troops · −2 efficiency · −1 armor</small></article>
+          <article class="help-upgrade-card"><h4>Fortress State</h4><p>Starts at fortification level 3 for a strong permanent defensive bonus, but begins with fewer troops and weaker efficiency.</p><small>Fortification Lv.3 · −12 troops · −4 efficiency · −$30</small></article>
+          <article class="help-upgrade-card"><h4>Armored Command</h4><p>Starts with 6 armor, creating a major defensive and casualty-reduction advantage until the armor is destroyed.</p><small>6 armor · −8 troops · −4 efficiency · −$40</small></article>
+          <article class="help-upgrade-card"><h4>Technical Directorate</h4><p>Starts with technology level 3 and logistics level 2, creating a flexible combined-arms advantage at the cost of opening troop count.</p><small>Technology Lv.3 · Logistics Lv.2 · +2 efficiency · −10 troops</small></article>
+        </div>
+      </section>
 
       <section class="help-section">
         <h3>Upgrade shop</h3>
@@ -209,7 +223,7 @@
           </article>
           <article class="help-upgrade-card">
             <h4>Efficiency</h4>
-            <p>Adds 5 efficiency, up to 120. Efficiency raises round income and changes combat strength by 0.25% for every point above or below 85.</p>
+            <p>Adds 5 efficiency, up to 120. Every point above or below 85 changes combat strength by 0.45%. Efficiency also changes gross territory income through a visible income multiplier.</p>
             <small>Starting cost: $170 · Cost rises by $90 per purchase</small>
           </article>
           <article class="help-upgrade-card">
@@ -219,17 +233,17 @@
           </article>
           <article class="help-upgrade-card">
             <h4>Armor</h4>
-            <p>Adds 1 armored vehicle. Armor increases defense with diminishing returns, capped at +12%. Each vehicle costs $7 upkeep per round and can be destroyed in the interception minigame.</p>
+            <p>Adds 1 armored vehicle. Every surviving armor unit adds +3% defense, capped at +18%, and reduces defending casualties by 1.8%, capped at 12%. Armor costs $7 upkeep per round and can be destroyed in the interception minigame.</p>
             <small>Starting cost: $220 · Cost rises by $125 per purchase</small>
           </article>
           <article class="help-upgrade-card">
             <h4>Logistics</h4>
-            <p>Adds 1 level, up to level 8. Each level above 1 adds 1.2% attack strength, raises the local defending force by 1 percentage point, adds about 2.2 recruits per round, and supports 28 more troops before attrition.</p>
+            <p>Adds 1 level, up to level 8. Each level above 1 adds +3% attack strength, +2 percentage points to the local defending force, +4 recruits per round, +40 supply capacity, and an 8% army-upkeep discount, capped at 35%.</p>
             <small>Starting cost: $200 · Cost rises by $135 per purchase</small>
           </article>
           <article class="help-upgrade-card">
             <h4>Fortification</h4>
-            <p>Adds 1 level, up to level 8. Each level above 1 adds 1.8% defense to every territory you currently defend.</p>
+            <p>Adds 1 level, up to level 8. Each level above 1 adds +3% defense to every territory you currently defend.</p>
             <small>Starting cost: $170 · Cost rises by $100 per purchase</small>
           </article>
         </div>
@@ -243,7 +257,7 @@
           <div><strong>Friendly support</strong><span>Each friendly tile adjacent to the attacking source tile adds 1.2% attack strength.</span></div>
           <div><strong>Home defense</strong><span>Defenders receive a fixed +3% bonus.</span></div>
           <div><strong>Capital</strong><span>Defending your original capital adds +8% defense.</span></div>
-          <div><strong>Local defense force</strong><span>A territory uses 22% of the defender’s total army, plus 1 percentage point for every logistics level above 1, capped at 29%.</span></div>
+          <div><strong>Local defense force</strong><span>A territory uses 22% of the defender’s total army, plus 2 percentage points for every logistics level above 1, capped at 34%.</span></div>
         </div>
       </section>
 
@@ -260,7 +274,7 @@
 
       <section class="help-section">
         <h3>Round economy</h3>
-        <p class="help-footnote">Income depends on territory and efficiency. Smaller countries receive catch-up income. Army and armor create upkeep costs. Recruitment depends on territory, logistics, technology, and an army catch-up factor. Armies above their sustainable supply limit can lose troops to attrition.</p>
+        <p class="help-footnote">Gross territory income is multiplied by efficiency. Smaller countries receive catch-up income. Logistics discounts army upkeep, adds four recruits per level, and increases sustainable supply by 40 troops per level. Armor still costs $7 per unit. Armies above their sustainable supply limit can lose troops to attrition.</p>
       </section>
     </div>
   </div>
@@ -269,8 +283,8 @@
     <div class="modal-card info-modal-card balance-modal-card">
       <div class="modal-heading-row">
         <div>
-          <p class="eyebrow">STARTING BALANCE AUDIT</p>
-          <h2 id="balanceTitle">Player-by-player starting differences</h2>
+          <p class="eyebrow">STARTING DOCTRINE AUDIT</p>
+          <h2 id="balanceTitle">Unique buffs and trade-offs for every player</h2>
         </div>
         <button id="closeBalanceBtn" class="icon-btn modal-close" type="button" aria-label="Close starting balance">Close</button>
       </div>
