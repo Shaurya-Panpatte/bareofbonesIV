@@ -16,6 +16,63 @@ const WIDTH = 24;
 const HEIGHT = 16;
 const MAX_CHAT_MESSAGES = 100;
 
+const BASE_STARTING_STATS = {
+  money: 680,
+  army: 116,
+  efficiency: 86,
+  technology: 2,
+  armor: 3,
+  logistics: 1,
+  fortification: 1,
+  morale: 100,
+  warExhaustion: 0
+};
+
+const STARTING_DOCTRINES = [
+  {
+    id: 'mass-mobilization',
+    name: 'Mass Mobilization',
+    summary: 'A large opening army, paid for with weaker industry and lighter armor.',
+    stats: { money: 620, army: 142, efficiency: 80, technology: 2, armor: 2, logistics: 1, fortification: 1 },
+    effects: ['+26 starting troops', '−6 efficiency', '−1 armor', '−$60 starting money']
+  },
+  {
+    id: 'industrial-engine',
+    name: 'Industrial Engine',
+    summary: 'Superior efficiency and starting money, but fewer troops and armored vehicles.',
+    stats: { money: 760, army: 108, efficiency: 100, technology: 2, armor: 2, logistics: 1, fortification: 1 },
+    effects: ['+14 efficiency', '+$80 starting money', '−8 starting troops', '−1 armor']
+  },
+  {
+    id: 'logistics-network',
+    name: 'Logistics Network',
+    summary: 'Stronger supply, attack coordination, recruitment, and local defensive response.',
+    stats: { money: 680, army: 108, efficiency: 84, technology: 2, armor: 2, logistics: 3, fortification: 1 },
+    effects: ['Logistics starts at level 3', '−8 starting troops', '−2 efficiency', '−1 armor']
+  },
+  {
+    id: 'fortress-state',
+    name: 'Fortress State',
+    summary: 'Powerful permanent defenses in exchange for a smaller, less efficient field army.',
+    stats: { money: 650, army: 104, efficiency: 82, technology: 2, armor: 3, logistics: 1, fortification: 3 },
+    effects: ['Fortification starts at level 3', '−12 starting troops', '−4 efficiency', '−$30 starting money']
+  },
+  {
+    id: 'armored-command',
+    name: 'Armored Command',
+    summary: 'Heavy armor sharply improves defense and reduces casualties until intercepted.',
+    stats: { money: 640, army: 108, efficiency: 82, technology: 2, armor: 6, logistics: 1, fortification: 1 },
+    effects: ['6 starting armor', '−8 starting troops', '−4 efficiency', '−$40 starting money']
+  },
+  {
+    id: 'technical-directorate',
+    name: 'Technical Directorate',
+    summary: 'Advanced technology and improved logistics create a flexible combined-arms force.',
+    stats: { money: 650, army: 106, efficiency: 88, technology: 3, armor: 2, logistics: 2, fortification: 1 },
+    effects: ['Technology starts at level 3', 'Logistics starts at level 2', '+2 efficiency', '−10 starting troops']
+  }
+];
+
 const TERRAIN = {
   plains: { name: 'Plains', defense: 1, occupationLoss: 0.1 },
   forest: { name: 'Forest', defense: 1.06, occupationLoss: 0.13 },
@@ -95,18 +152,8 @@ function makePlayer(socketId, name, index) {
     connected: true,
     defeated: false,
     resigned: false,
-    stats: {
-      // Equal starting combat stats keep player order from creating a hidden advantage.
-      money: 680,
-      army: 116,
-      efficiency: 86,
-      technology: 2,
-      armor: 3,
-      logistics: 1,
-      fortification: 1,
-      morale: 100,
-      warExhaustion: 0
-    },
+    doctrine: null,
+    stats: { ...BASE_STARTING_STATS },
     upgradeLevels: {
       army: 0,
       efficiency: 0,
@@ -116,6 +163,42 @@ function makePlayer(socketId, name, index) {
       fortification: 0
     }
   };
+}
+
+function shuffled(items) {
+  const copy = [...items];
+  for (let i = copy.length - 1; i > 0; i--) {
+    const j = randomInt(0, i);
+    [copy[i], copy[j]] = [copy[j], copy[i]];
+  }
+  return copy;
+}
+
+function assignStartingDoctrines(room) {
+  const available = shuffled(STARTING_DOCTRINES);
+  room.players.forEach((player, index) => {
+    const doctrine = available[index];
+    player.doctrine = {
+      id: doctrine.id,
+      name: doctrine.name,
+      summary: doctrine.summary,
+      effects: [...doctrine.effects]
+    };
+    player.stats = {
+      ...BASE_STARTING_STATS,
+      ...doctrine.stats,
+      morale: 100,
+      warExhaustion: 0
+    };
+    player.upgradeLevels = {
+      army: 0,
+      efficiency: 0,
+      technology: 0,
+      armor: 0,
+      logistics: 0,
+      fortification: 0
+    };
+  });
 }
 
 function emptyGrid() {
@@ -275,6 +358,7 @@ function partitionMap(mask, playerCount) {
 }
 
 function initializeGame(room) {
+  assignStartingDoctrines(room);
   const { grid: mask, bridgeCells } = generateLandMask();
   const partition = partitionMap(mask, room.players.length);
   room.map = partition.owner;
@@ -287,7 +371,14 @@ function initializeGame(room) {
   room.drawVotes = [];
   room.gameResult = null;
   room.startingBalance = buildStartingBalance(room);
-  room.log = [`Round 1 begins. ${room.players[0].name} moves first.`];
+  const doctrineSummary = room.players
+    .map(player => `${player.name}: ${player.doctrine.name}`)
+    .join(' · ');
+  room.log = [
+    `Unique starting doctrines assigned — ${doctrineSummary}.`,
+    `Round 1 begins. ${room.players[0].name} moves first.`
+  ];
+  addSystemMessage(room, `Unique starting doctrines: ${doctrineSummary}.`);
   addSystemMessage(room, `The war has begun. ${room.players[0].name} moves first.`);
 }
 
@@ -335,7 +426,9 @@ function buildStartingBalance(room) {
       name: player.name,
       color: player.color,
       turnOrder: index + 1,
+      doctrine: player.doctrine ? { ...player.doctrine, effects: [...player.doctrine.effects] } : null,
       stats: Object.fromEntries(trackedStats.map(stat => [stat, player.stats[stat]])),
+      derivedEffects: getPlayerEffects(player),
       upgradeLevels: { ...player.upgradeLevels },
       tileCount: countTiles(room, index),
       terrain,
@@ -371,21 +464,25 @@ function buildStartingBalance(room) {
   const allUpgradeLevelsEqual = playerSnapshots.every(player =>
     Object.values(player.upgradeLevels).every(level => level === 0)
   );
+  const doctrineIds = playerSnapshots.map(player => player.doctrine?.id).filter(Boolean);
+  const allDoctrinesUnique = doctrineIds.length === playerSnapshots.length && new Set(doctrineIds).size === doctrineIds.length;
 
   return {
     generatedAt: Date.now(),
     allCoreStatsEqual,
     allUpgradeLevelsEqual,
+    allDoctrinesUnique,
     averages: Object.fromEntries(
       Object.entries(averages).map(([key, value]) => [key, Math.round(value * 10) / 10])
     ),
     players: playerSnapshots,
     notes: [
-      allCoreStatsEqual
-        ? 'Army, efficiency, logistics, fortification, technology, and armor are identical for every player at game start.'
-        : 'One or more starting combat stats differ between players.',
+      allDoctrinesUnique
+        ? 'Every player received a different starting doctrine; doctrines are shuffled so player order does not choose the buff.'
+        : 'A duplicate or missing doctrine was detected.',
+      'Starting combat stats intentionally differ because each doctrine has clear strengths and trade-offs.',
       allUpgradeLevelsEqual
-        ? 'Every purchased-upgrade level starts at 0.'
+        ? 'Every purchased-upgrade level starts at 0; doctrine levels are starting stats, not purchased upgrades.'
         : 'One or more players started with a purchased-upgrade level above 0.',
       'Procedural maps can still create small differences in tile count, terrain mix, capital terrain, and turn order.'
     ]
@@ -414,6 +511,33 @@ function friendlySupport(room, tile, playerIndex) {
     if (x < 0 || x >= room.width || y < 0 || y >= room.height) return support;
     return support + (room.map[y][x] === playerIndex ? 1 : 0);
   }, 0);
+}
+
+function getPlayerEffects(player) {
+  const efficiencyCombat = (player.stats.efficiency - 85) * 0.0045;
+  const efficiencyIncomeMultiplier = clamp(0.55 + player.stats.efficiency * 0.0055, 0.88, 1.22);
+  const logisticsLevels = Math.max(0, player.stats.logistics - 1);
+  const logisticsAttack = logisticsLevels * 0.03;
+  const localDefenseShare = clamp(0.22 + logisticsLevels * 0.02, 0.22, 0.34);
+  const logisticsRecruitBonus = player.stats.logistics * 4;
+  const supplyCapacityBonus = player.stats.logistics * 40;
+  const upkeepDiscount = Math.min(0.35, logisticsLevels * 0.08);
+  const armorDefense = Math.min(0.18, Math.max(0, player.stats.armor) * 0.03);
+  const armorCasualtyReduction = Math.min(0.12, Math.max(0, player.stats.armor) * 0.018);
+  const fortificationDefense = Math.max(0, player.stats.fortification - 1) * 0.03;
+
+  return {
+    efficiencyCombat,
+    efficiencyIncomeMultiplier,
+    logisticsAttack,
+    localDefenseShare,
+    logisticsRecruitBonus,
+    supplyCapacityBonus,
+    upkeepDiscount,
+    armorDefense,
+    armorCasualtyReduction,
+    fortificationDefense
+  };
 }
 
 function getUpgradeOffers(player) {
@@ -473,7 +597,9 @@ function publicPlayer(player, index, room) {
     connected: player.connected,
     defeated: player.defeated,
     resigned: player.resigned,
+    doctrine: player.doctrine ? { ...player.doctrine, effects: [...player.doctrine.effects] } : null,
     stats: { ...player.stats },
+    effects: getPlayerEffects(player),
     upgradeLevels: { ...player.upgradeLevels },
     tileCount: room.status === 'playing' || room.status === 'finished' ? countTiles(room, index) : 0,
     upgradeOffers: getUpgradeOffers(player)
@@ -553,15 +679,17 @@ function applyRoundEconomy(room) {
 
   for (const { player, index } of livingIndexes) {
     const tiles = countTiles(room, index);
-    const baseIncome = tiles * (3.4 + player.stats.efficiency / 34);
+    const effects = getPlayerEffects(player);
+    const baseIncome = tiles * 6.2 * effects.efficiencyIncomeMultiplier;
     const catchUpIncome = Math.max(0, leaderTiles - tiles) * 2.4;
-    const armyUpkeep = Math.max(0, player.stats.army - (90 + tiles * 1.5)) * 0.42;
+    const rawArmyUpkeep = Math.max(0, player.stats.army - (90 + tiles * 1.5)) * 0.42;
+    const armyUpkeep = rawArmyUpkeep * (1 - effects.upkeepDiscount);
     const armorUpkeep = player.stats.armor * 7;
     const netIncome = Math.max(24, Math.round(baseIncome + catchUpIncome - armyUpkeep - armorUpkeep));
 
     const armyCatchUp = Math.max(0, averageArmy - player.stats.army) * 0.05;
     const recruits = Math.max(4, Math.round(
-      tiles * 0.075 + player.stats.logistics * 2.2 + player.stats.technology * 0.8 + armyCatchUp
+      tiles * 0.075 + effects.logisticsRecruitBonus + player.stats.technology * 0.8 + armyCatchUp
     ));
 
     player.stats.money += netIncome;
@@ -569,7 +697,7 @@ function applyRoundEconomy(room) {
     player.stats.morale = clamp(player.stats.morale + 4, 55, 120);
     player.stats.warExhaustion = clamp(player.stats.warExhaustion - 8, 0, 80);
 
-    const sustainableArmy = tiles * 7 + player.stats.logistics * 28 + 70;
+    const sustainableArmy = tiles * 7 + effects.supplyCapacityBonus + 70;
     if (player.stats.army > sustainableArmy) {
       const attrition = Math.max(1, Math.round((player.stats.army - sustainableArmy) * 0.07));
       player.stats.army = Math.max(1, player.stats.army - attrition);
@@ -677,9 +805,10 @@ function nextTurn(room) {
 }
 
 function sharedCombatBonuses(player) {
+  const effects = getPlayerEffects(player);
   return {
     technology: (player.stats.technology - 2) * 0.035,
-    efficiency: (player.stats.efficiency - 85) * 0.0025,
+    efficiency: effects.efficiencyCombat,
     morale: (player.stats.morale - 100) * 0.003,
     exhaustion: -player.stats.warExhaustion * 0.0015
   };
@@ -690,7 +819,7 @@ function sumBonuses(bonuses) {
 }
 
 function defenderLocalShare(defender) {
-  return clamp(0.22 + Math.max(0, defender.stats.logistics - 1) * 0.01, 0.22, 0.29);
+  return getPlayerEffects(defender).localDefenseShare;
 }
 
 function combatFactors(room, attackerIndex, defenderIndex, from, target) {
@@ -701,10 +830,13 @@ function combatFactors(room, attackerIndex, defenderIndex, from, target) {
   const support = friendlySupport(room, from, attackerIndex);
   const capitalBonus = isCapital(room, target, defenderIndex) ? 0.08 : 0;
 
+  const attackerEffects = getPlayerEffects(attacker);
+  const defenderEffects = getPlayerEffects(defender);
+
   const attackerBonuses = {
     ...sharedCombatBonuses(attacker),
     support: support * 0.012,
-    logistics: Math.max(0, attacker.stats.logistics - 1) * 0.012,
+    logistics: attackerEffects.logisticsAttack,
     bridge: terrainKey === 'bridge' ? -0.04 : 0
   };
 
@@ -712,9 +844,9 @@ function combatFactors(room, attackerIndex, defenderIndex, from, target) {
     ...sharedCombatBonuses(defender),
     terrain: terrain.defense - 1,
     home: 0.03,
-    fortification: Math.max(0, defender.stats.fortification - 1) * 0.018,
+    fortification: defenderEffects.fortificationDefense,
     capital: capitalBonus,
-    armor: Math.min(0.12, Math.sqrt(Math.max(0, defender.stats.armor)) * 0.035)
+    armor: defenderEffects.armorDefense
   };
 
   const attackerMultiplier = clamp(1 + sumBonuses(attackerBonuses), 0.78, 1.38);
@@ -726,6 +858,8 @@ function combatFactors(room, attackerIndex, defenderIndex, from, target) {
     support,
     attackerBonuses,
     defenderBonuses,
+    attackerEffects,
+    defenderEffects,
     attackerMultiplier,
     defenderMultiplier
   };
@@ -810,7 +944,11 @@ function resolveBattle(room, battle, selectedCell) {
     const powerRatio = attackerPower / Math.max(defenderPower, 1);
 
     const attackerLossRate = clamp(0.11 + (1 / Math.max(powerRatio, 0.2)) * 0.09, 0.08, 0.34);
-    const defenderLossRate = clamp(0.12 + powerRatio * 0.1, 0.09, 0.39);
+    const defenderLossRate = clamp(
+      (0.12 + powerRatio * 0.1) * (1 - factors.defenderEffects.armorCasualtyReduction),
+      0.07,
+      0.39
+    );
     const attackerLoss = Math.min(
       attackerForce,
       Math.max(1, Math.round(attackerForce * attackerLossRate * randomBetween(0.93, 1.07)))
@@ -916,10 +1054,15 @@ function resolveBattle(room, battle, selectedCell) {
     modifiers: {
       attackerTotal: Math.round((factors.attackerMultiplier - 1) * 100),
       defenderTotal: Math.round((factors.defenderMultiplier - 1) * 100),
-      attackerSupport: Math.round((factors.attackerBonuses.support + factors.attackerBonuses.logistics + factors.attackerBonuses.bridge) * 100),
+      attackerEfficiency: Math.round(factors.attackerBonuses.efficiency * 100),
+      defenderEfficiency: Math.round(factors.defenderBonuses.efficiency * 100),
+      attackerLogistics: Math.round(factors.attackerBonuses.logistics * 100),
+      attackerSupport: Math.round((factors.attackerBonuses.support + factors.attackerBonuses.bridge) * 100),
+      defenderLocalShare: Math.round(factors.defenderEffects.localDefenseShare * 100),
       terrainDefense: Math.round(factors.defenderBonuses.terrain * 100),
       fortification: Math.round(factors.defenderBonuses.fortification * 100),
       armorDefense: Math.round(factors.defenderBonuses.armor * 100),
+      armorCasualtyReduction: Math.round(factors.defenderEffects.armorCasualtyReduction * 100),
       capitalDefense: Math.round(factors.defenderBonuses.capital * 100)
     }
   });
