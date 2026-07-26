@@ -1,4 +1,5 @@
 const path = require('path');
+const crypto = require('crypto');
 const express = require('express');
 const http = require('http');
 const { Server } = require('socket.io');
@@ -15,6 +16,7 @@ const COLORS = ['#4f8cff', '#ff5d7a', '#40c98b', '#f6b94b', '#a97cff', '#35c2d6'
 const WIDTH = 24;
 const HEIGHT = 16;
 const MAX_CHAT_MESSAGES = 100;
+const RECONNECT_GRACE_MS = 2 * 60 * 1000;
 
 const BASE_STARTING_STATS = {
   money: 680,
@@ -116,7 +118,24 @@ function sanitizeChat(text) {
     .slice(0, 180);
 }
 
-function createRoom(hostSocket, hostName) {
+function sanitizeReconnectToken(token) {
+  const cleaned = String(token || '')
+    .replace(/[^a-zA-Z0-9_-]/g, '')
+    .slice(0, 128);
+  return cleaned.length >= 16 ? cleaned : '';
+}
+
+function makeReconnectToken() {
+  return crypto.randomBytes(24).toString('base64url');
+}
+
+function uniqueReconnectToken(room, requestedToken) {
+  let token = sanitizeReconnectToken(requestedToken) || makeReconnectToken();
+  while (room.players.some(player => player.reconnectToken === token)) token = makeReconnectToken();
+  return token;
+}
+
+function createRoom(hostSocket, hostName, requestedToken) {
   const code = makeRoomCode();
   const room = {
     code,
@@ -135,16 +154,23 @@ function createRoom(hostSocket, hostName) {
     chat: [],
     drawVotes: [],
     gameResult: null,
-    startingBalance: null
+    startingBalance: null,
+    disconnectTimers: new Map(),
+    temporaryOriginalOwners: new Map()
   };
 
-  room.players.push(makePlayer(hostSocket.id, hostName, 0));
+  room.players.push(makePlayer(
+    hostSocket.id,
+    hostName,
+    0,
+    uniqueReconnectToken(room, requestedToken)
+  ));
   addSystemMessage(room, `${room.players[0].name} created the room.`);
   rooms.set(code, room);
   return room;
 }
 
-function makePlayer(socketId, name, index) {
+function makePlayer(socketId, name, index, reconnectToken) {
   return {
     id: socketId,
     name: sanitizeName(name),
@@ -152,6 +178,12 @@ function makePlayer(socketId, name, index) {
     connected: true,
     defeated: false,
     resigned: false,
+    forfeited: false,
+    reconnectToken: reconnectToken || makeReconnectToken(),
+    disconnectedAt: null,
+    reconnectDeadline: null,
+    savedTerritory: [],
+    temporarilyRedistributed: false,
     doctrine: null,
     stats: { ...BASE_STARTING_STATS },
     upgradeLevels: {
@@ -358,6 +390,20 @@ function partitionMap(mask, playerCount) {
 }
 
 function initializeGame(room) {
+  for (const timer of room.disconnectTimers.values()) clearTimeout(timer);
+  room.disconnectTimers.clear();
+  room.temporaryOriginalOwners.clear();
+  room.players.forEach(player => {
+    player.connected = true;
+    player.defeated = false;
+    player.resigned = false;
+    player.forfeited = false;
+    player.disconnectedAt = null;
+    player.reconnectDeadline = null;
+    player.savedTerritory = [];
+    player.temporarilyRedistributed = false;
+  });
+
   assignStartingDoctrines(room);
   const { grid: mask, bridgeCells } = generateLandMask();
   const partition = partitionMap(mask, room.players.length);
@@ -388,6 +434,159 @@ function countTiles(room, playerIndex) {
     if (owner === playerIndex) count++;
   }));
   return count;
+}
+
+function isReconnectPending(player, now = Date.now()) {
+  return Boolean(
+    player &&
+    !player.connected &&
+    !player.defeated &&
+    Number.isFinite(player.reconnectDeadline) &&
+    player.reconnectDeadline > now &&
+    Array.isArray(player.savedTerritory) &&
+    player.savedTerritory.length > 0
+  );
+}
+
+function effectiveTerritoryCount(room, playerIndex) {
+  const actual = countTiles(room, playerIndex);
+  if (actual > 0) return actual;
+  const player = room.players[playerIndex];
+  return isReconnectPending(player) ? player.savedTerritory.length : 0;
+}
+
+function territoryCells(room, playerIndex) {
+  const cells = [];
+  for (let y = 0; y < room.height; y++) {
+    for (let x = 0; x < room.width; x++) {
+      if (room.map[y][x] === playerIndex) cells.push({ x, y });
+    }
+  }
+  return cells;
+}
+
+function activeNeighborIndexes(room, playerIndex, cells) {
+  const neighbors = new Set();
+  const directions = [[1, 0], [-1, 0], [0, 1], [0, -1]];
+
+  for (const cell of cells) {
+    for (const [dx, dy] of directions) {
+      const x = cell.x + dx;
+      const y = cell.y + dy;
+      if (x < 0 || x >= room.width || y < 0 || y >= room.height) continue;
+      const owner = room.map[y][x];
+      if (!Number.isInteger(owner) || owner === playerIndex) continue;
+      const candidate = room.players[owner];
+      if (!candidate || candidate.defeated || !candidate.connected || countTiles(room, owner) === 0) continue;
+      neighbors.add(owner);
+    }
+  }
+
+  return [...neighbors];
+}
+
+function cellKey(cell) {
+  return `${cell.x},${cell.y}`;
+}
+
+function chooseRedistributionCell(room, recipientIndex, unassigned) {
+  const directions = [[1, 0], [-1, 0], [0, 1], [0, -1]];
+  const borderCandidates = [];
+
+  for (const cell of unassigned.values()) {
+    let touchesRecipient = false;
+    let openNeighbors = 0;
+    for (const [dx, dy] of directions) {
+      const x = cell.x + dx;
+      const y = cell.y + dy;
+      if (x < 0 || x >= room.width || y < 0 || y >= room.height) continue;
+      if (room.map[y][x] === recipientIndex) touchesRecipient = true;
+      if (unassigned.has(`${x},${y}`)) openNeighbors++;
+    }
+    if (touchesRecipient) borderCandidates.push({ ...cell, openNeighbors });
+  }
+
+  if (borderCandidates.length > 0) {
+    borderCandidates.sort((a, b) => b.openNeighbors - a.openNeighbors || a.y - b.y || a.x - b.x);
+    return borderCandidates[0];
+  }
+
+  const recipientCells = territoryCells(room, recipientIndex);
+  let best = null;
+  let bestDistance = Infinity;
+  for (const cell of unassigned.values()) {
+    let distance = Infinity;
+    for (const owned of recipientCells) {
+      distance = Math.min(distance, manhattan(cell, owned));
+      if (distance <= 1) break;
+    }
+    if (distance < bestDistance || (distance === bestDistance && (!best || cell.y < best.y || (cell.y === best.y && cell.x < best.x)))) {
+      bestDistance = distance;
+      best = cell;
+    }
+  }
+  return best;
+}
+
+function redistributeDisconnectedTerritory(room, playerIndex) {
+  const cells = territoryCells(room, playerIndex);
+  if (cells.length === 0) return { total: 0, distributed: [], undistributed: 0 };
+
+  const recipients = activeNeighborIndexes(room, playerIndex, cells)
+    .sort((a, b) => countTiles(room, a) - countTiles(room, b) || a - b);
+
+  if (recipients.length === 0) {
+    return { total: cells.length, distributed: [], undistributed: cells.length };
+  }
+
+  const baseShare = Math.floor(cells.length / recipients.length);
+  const remainder = cells.length % recipients.length;
+  const quotas = new Map();
+  const awarded = new Map();
+  recipients.forEach((recipientIndex, order) => {
+    quotas.set(recipientIndex, baseShare + (order < remainder ? 1 : 0));
+    awarded.set(recipientIndex, 0);
+  });
+
+  const unassigned = new Map(cells.map(cell => [cellKey(cell), cell]));
+  let guard = cells.length * Math.max(2, recipients.length + 1);
+
+  while (unassigned.size > 0 && guard-- > 0) {
+    let progress = false;
+    for (const recipientIndex of recipients) {
+      if (unassigned.size === 0) break;
+      if (awarded.get(recipientIndex) >= quotas.get(recipientIndex)) continue;
+
+      const cell = chooseRedistributionCell(room, recipientIndex, unassigned);
+      if (!cell) continue;
+      room.map[cell.y][cell.x] = recipientIndex;
+      unassigned.delete(cellKey(cell));
+      awarded.set(recipientIndex, awarded.get(recipientIndex) + 1);
+      progress = true;
+    }
+    if (!progress) break;
+  }
+
+  // This fallback should rarely be needed, but guarantees that every forfeited tile is reassigned.
+  for (const cell of [...unassigned.values()]) {
+    const recipientIndex = recipients
+      .filter(index => awarded.get(index) < quotas.get(index))
+      .sort((a, b) => awarded.get(a) - awarded.get(b) || a - b)[0] ?? recipients[0];
+    room.map[cell.y][cell.x] = recipientIndex;
+    awarded.set(recipientIndex, awarded.get(recipientIndex) + 1);
+    unassigned.delete(cellKey(cell));
+  }
+
+  return {
+    total: cells.length,
+    distributed: recipients.map(recipientIndex => ({
+      playerIndex: recipientIndex,
+      playerId: room.players[recipientIndex].id,
+      playerName: room.players[recipientIndex].name,
+      tiles: awarded.get(recipientIndex)
+    })),
+    undistributed: unassigned.size
+  };
 }
 
 function currentPlayer(room) {
@@ -590,6 +789,7 @@ function getUpgradeOffers(player) {
 }
 
 function publicPlayer(player, index, room) {
+  const reconnecting = isReconnectPending(player);
   return {
     id: player.id,
     name: player.name,
@@ -597,11 +797,19 @@ function publicPlayer(player, index, room) {
     connected: player.connected,
     defeated: player.defeated,
     resigned: player.resigned,
+    forfeited: player.forfeited,
+    reconnecting,
+    reconnectDeadline: reconnecting ? player.reconnectDeadline : null,
+    savedTileCount: reconnecting ? player.savedTerritory.length : 0,
+    temporarilyRedistributed: reconnecting && player.temporarilyRedistributed,
     doctrine: player.doctrine ? { ...player.doctrine, effects: [...player.doctrine.effects] } : null,
     stats: { ...player.stats },
     effects: getPlayerEffects(player),
     upgradeLevels: { ...player.upgradeLevels },
     tileCount: room.status === 'playing' || room.status === 'finished' ? countTiles(room, index) : 0,
+    effectiveTileCount: room.status === 'playing' || room.status === 'finished'
+      ? effectiveTerritoryCount(room, index)
+      : 0,
     upgradeOffers: getUpgradeOffers(player)
   };
 }
@@ -631,7 +839,9 @@ function publicRoom(room) {
     chat: room.chat.slice(-MAX_CHAT_MESSAGES),
     drawVotes: [...room.drawVotes],
     gameResult: room.gameResult ? { ...room.gameResult } : null,
-    startingBalance: room.startingBalance ? JSON.parse(JSON.stringify(room.startingBalance)) : null
+    startingBalance: room.startingBalance ? JSON.parse(JSON.stringify(room.startingBalance)) : null,
+    reconnectGraceMs: RECONNECT_GRACE_MS,
+    serverTime: Date.now()
   };
 }
 
@@ -670,7 +880,11 @@ function addPlayerMessage(room, player, text) {
 function applyRoundEconomy(room) {
   const livingIndexes = room.players
     .map((player, index) => ({ player, index }))
-    .filter(({ player, index }) => !player.defeated && countTiles(room, index) > 0);
+    .filter(({ player, index }) =>
+      player.connected &&
+      !player.defeated &&
+      countTiles(room, index) > 0
+    );
 
   const tileCounts = livingIndexes.map(({ index }) => countTiles(room, index));
   const leaderTiles = Math.max(...tileCounts, 1);
@@ -711,13 +925,15 @@ function getLivingPlayers(room, connectedOnly = false) {
     .map((player, index) => ({ player, index }))
     .filter(({ player, index }) =>
       !player.defeated &&
-      countTiles(room, index) > 0 &&
+      effectiveTerritoryCount(room, index) > 0 &&
       (!connectedOnly || player.connected)
     );
 }
 
 function finishGame(room, result) {
   if (room.status === 'finished') return false;
+  for (const timer of room.disconnectTimers.values()) clearTimeout(timer);
+  room.disconnectTimers.clear();
   room.status = 'finished';
   room.pendingBattle = null;
   room.drawVotes = [];
@@ -1069,14 +1285,236 @@ function resolveBattle(room, battle, selectedCell) {
   emitRoom(room);
 }
 
-function leaveRoom(socket) {
+function clearDisconnectTimer(room, playerIndex) {
+  const timer = room.disconnectTimers.get(playerIndex);
+  if (timer) clearTimeout(timer);
+  room.disconnectTimers.delete(playerIndex);
+}
+
+function formatRedistribution(redistribution) {
+  return redistribution.distributed
+    .filter(entry => entry.tiles > 0)
+    .map(entry => `${entry.playerName} +${entry.tiles}`)
+    .join(' · ');
+}
+
+function markTemporaryOwnership(room, playerIndex, cells) {
+  for (const cell of cells) {
+    const key = cellKey(cell);
+    if (!room.temporaryOriginalOwners.has(key)) {
+      room.temporaryOriginalOwners.set(key, playerIndex);
+    }
+  }
+}
+
+function clearTemporaryOwnership(room, playerIndex) {
+  for (const [key, ownerIndex] of room.temporaryOriginalOwners.entries()) {
+    if (ownerIndex === playerIndex) room.temporaryOriginalOwners.delete(key);
+  }
+}
+
+function savedTerritoryForDisconnect(room, playerIndex) {
+  return territoryCells(room, playerIndex).filter(cell => {
+    const originalOwner = room.temporaryOriginalOwners.get(cellKey(cell));
+    return originalOwner === undefined || originalOwner === playerIndex;
+  });
+}
+
+function eliminatePlayersWithoutTerritory(room, exceptIndex = -1) {
+  const eliminated = [];
+  room.players.forEach((candidate, index) => {
+    if (
+      index === exceptIndex ||
+      candidate.defeated ||
+      candidate.resigned ||
+      isReconnectPending(candidate) ||
+      countTiles(room, index) > 0
+    ) return;
+
+    candidate.defeated = true;
+    candidate.stats.army = 0;
+    candidate.stats.armor = 0;
+    candidate.stats.morale = 55;
+    eliminated.push({ player: candidate, index });
+    addLog(room, `${candidate.name} lost their final territory during restoration and was eliminated.`);
+    addSystemMessage(room, `${candidate.name} was eliminated when restored borders displaced their final holdings.`);
+  });
+  return eliminated;
+}
+
+function restoreSavedTerritory(room, playerIndex) {
+  const player = room.players[playerIndex];
+  const saved = Array.isArray(player.savedTerritory) ? player.savedTerritory : [];
+  const displaced = new Map();
+  let restored = 0;
+
+  for (const cell of saved) {
+    if (!validTile(room, cell)) continue;
+    const previousOwner = room.map[cell.y][cell.x];
+    if (Number.isInteger(previousOwner) && previousOwner !== playerIndex) {
+      displaced.set(previousOwner, (displaced.get(previousOwner) || 0) + 1);
+    }
+    room.map[cell.y][cell.x] = playerIndex;
+    room.temporaryOriginalOwners.delete(cellKey(cell));
+    restored++;
+  }
+
+  player.savedTerritory = [];
+  player.temporarilyRedistributed = false;
+
+  const eliminated = eliminatePlayersWithoutTerritory(room, playerIndex);
+  return {
+    restored,
+    displaced: [...displaced.entries()].map(([index, tiles]) => ({
+      playerIndex: index,
+      playerName: room.players[index]?.name || `Player ${index + 1}`,
+      tiles
+    })),
+    eliminated
+  };
+}
+
+function finalizeDisconnectedPlayer(room, playerIndex, reason = 'timeout') {
+  const player = room.players[playerIndex];
+  if (!player || player.connected || player.defeated) return false;
+
+  clearDisconnectTimer(room, playerIndex);
+
+  const deadlineExpired = !player.reconnectDeadline || Date.now() >= player.reconnectDeadline;
+  if (reason === 'timeout' && !deadlineExpired) return false;
+
+  const leftover = countTiles(room, playerIndex) > 0
+    ? redistributeDisconnectedTerritory(room, playerIndex)
+    : { total: 0, distributed: [], undistributed: 0 };
+
+  player.forfeited = true;
+  player.defeated = true;
+  player.reconnectDeadline = null;
+  player.disconnectedAt = player.disconnectedAt || Date.now();
+  player.savedTerritory = [];
+  player.temporarilyRedistributed = false;
+  player.stats.army = 0;
+  player.stats.armor = 0;
+  player.stats.morale = 55;
+  clearTemporaryOwnership(room, playerIndex);
+
+  const split = formatRedistribution(leftover);
+  const message = reason === 'timeout'
+    ? `${player.name}'s 2-minute reconnection window expired. Their temporary territory holders keep the land${split ? `, with remaining tiles assigned: ${split}` : ''}.`
+    : `${player.name} left the match permanently. Their territory remains with the countries currently holding it${split ? `; remaining tiles were assigned: ${split}` : ''}.`;
+
+  addLog(room, message);
+  addSystemMessage(room, message);
+
+  if (room.hostId === player.id) {
+    const nextHost = room.players.find(candidate => candidate.connected && !candidate.defeated);
+    if (nextHost) room.hostId = nextHost.id;
+  }
+
+  if (room.status === 'playing') {
+    const currentInvalid = room.turnIndex === playerIndex ||
+      room.players[room.turnIndex]?.defeated ||
+      !room.players[room.turnIndex]?.connected ||
+      countTiles(room, room.turnIndex) === 0;
+
+    if (!finishGameIfDecided(room) && currentInvalid) nextTurn(room);
+    if (room.status === 'playing') finishDrawIfAccepted(room);
+  }
+
+  emitRoom(room);
+  return true;
+}
+
+function scheduleDisconnectExpiry(room, playerIndex) {
+  clearDisconnectTimer(room, playerIndex);
+  const player = room.players[playerIndex];
+  const delay = Math.max(0, (player.reconnectDeadline || Date.now()) - Date.now());
+  const timer = setTimeout(() => {
+    const latestRoom = rooms.get(room.code);
+    if (latestRoom !== room) return;
+    finalizeDisconnectedPlayer(room, playerIndex, 'timeout');
+  }, delay + 25);
+  room.disconnectTimers.set(playerIndex, timer);
+}
+
+function reconnectPlayer(socket, room, playerIndex, callback) {
+  const player = room.players[playerIndex];
+  if (!player) return callback?.({ ok: false, error: 'Saved player was not found.' });
+  if (room.status !== 'playing') {
+    return callback?.({ ok: false, error: 'This match is no longer active.', expired: true });
+  }
+  if (player.connected) {
+    return callback?.({ ok: false, error: 'This player is already connected in another tab.' });
+  }
+  if (player.defeated || player.forfeited) {
+    return callback?.({ ok: false, error: 'The reconnection window has expired.', expired: true });
+  }
+  if (!isReconnectPending(player)) {
+    finalizeDisconnectedPlayer(room, playerIndex, 'timeout');
+    return callback?.({ ok: false, error: 'The 2-minute reconnection window has expired.', expired: true });
+  }
+
+  clearDisconnectTimer(room, playerIndex);
+  const oldSocketId = player.id;
+  const restoration = restoreSavedTerritory(room, playerIndex);
+
+  player.id = socket.id;
+  player.connected = true;
+  player.disconnectedAt = null;
+  player.reconnectDeadline = null;
+  player.forfeited = false;
+  player.defeated = false;
+
+  if (room.hostId === oldSocketId) room.hostId = socket.id;
+  room.drawVotes = room.drawVotes.map(playerId => playerId === oldSocketId ? socket.id : playerId);
+
+  socket.join(room.code);
+  socket.data.roomCode = room.code;
+  socket.data.reconnectToken = player.reconnectToken;
+
+  const displacedSummary = restoration.displaced
+    .filter(entry => entry.tiles > 0)
+    .map(entry => `${entry.playerName} −${entry.tiles}`)
+    .join(' · ');
+
+  const message = `${player.name} reconnected and recovered ${restoration.restored} saved tile${restoration.restored === 1 ? '' : 's'}${displacedSummary ? ` (${displacedSummary})` : ''}.`;
+  addLog(room, message);
+  addSystemMessage(room, message);
+
+  const current = room.players[room.turnIndex];
+  if (
+    room.status === 'playing' &&
+    (!current || current.defeated || !current.connected || countTiles(room, room.turnIndex) === 0)
+  ) {
+    nextTurn(room);
+  }
+
+  emitRoom(room);
+  callback?.({
+    ok: true,
+    code: room.code,
+    reconnectToken: player.reconnectToken,
+    restoredTiles: restoration.restored
+  });
+}
+
+function leaveRoom(socket, { allowReconnect = true } = {}) {
   const code = socket.data.roomCode;
   if (!code || !rooms.has(code)) return;
+
   const room = rooms.get(code);
   socket.leave(code);
   socket.data.roomCode = null;
+
   const playerIndex = room.players.findIndex(player => player.id === socket.id);
   const player = room.players[playerIndex];
+  const wasCurrentTurn = room.status === 'playing' && room.turnIndex === playerIndex;
+  const wasActivePlayer = Boolean(
+    player &&
+    room.status === 'playing' &&
+    !player.defeated &&
+    countTiles(room, playerIndex) > 0
+  );
 
   if (player) {
     player.connected = false;
@@ -1092,23 +1530,63 @@ function leaveRoom(socket) {
     }
     if (room.hostId === socket.id) room.hostId = room.players[0].id;
     addSystemMessage(room, `${player?.name || 'A player'} left the room.`);
-  } else if (player) {
+    emitRoom(room);
+    return;
+  }
+
+  if (!player) return;
+
+  const battleInvolvedPlayer = room.pendingBattle && (
+    room.pendingBattle.attackerId === socket.id ||
+    room.pendingBattle.defenderIndex === playerIndex
+  );
+  if (battleInvolvedPlayer) {
+    room.pendingBattle = null;
+    addLog(room, `The pending battle was cancelled because ${player.name} disconnected.`);
+    addSystemMessage(room, `The pending battle involving ${player.name} was cancelled.`);
+  }
+
+  if (!wasActivePlayer) {
     addLog(room, `${player.name} disconnected.`);
     addSystemMessage(room, `${player.name} disconnected.`);
+    emitRoom(room);
+    return;
+  }
 
-    if (room.hostId === socket.id) {
-      const nextHost = room.players.find(candidate => candidate.connected && !candidate.defeated);
-      if (nextHost) room.hostId = nextHost.id;
-    }
+  if (!allowReconnect) {
+    player.savedTerritory = savedTerritoryForDisconnect(room, playerIndex);
+    markTemporaryOwnership(room, playerIndex, player.savedTerritory);
+    redistributeDisconnectedTerritory(room, playerIndex);
+    finalizeDisconnectedPlayer(room, playerIndex, 'left');
+    return;
+  }
 
-    if (room.pendingBattle?.attackerId === socket.id) {
-      room.pendingBattle = null;
-      addLog(room, 'The pending battle was cancelled because the attacker disconnected.');
-    }
+  player.savedTerritory = savedTerritoryForDisconnect(room, playerIndex);
+  markTemporaryOwnership(room, playerIndex, player.savedTerritory);
+  player.disconnectedAt = Date.now();
+  player.reconnectDeadline = player.disconnectedAt + RECONNECT_GRACE_MS;
+  player.temporarilyRedistributed = true;
+  player.forfeited = false;
+  player.defeated = false;
 
-    if (room.status === 'playing' && room.turnIndex === playerIndex) {
-      nextTurn(room);
-    }
+  const redistribution = redistributeDisconnectedTerritory(room, playerIndex);
+  const split = formatRedistribution(redistribution);
+
+  if (split) {
+    const message = `${player.name} disconnected. Their ${player.savedTerritory.length} saved tiles are temporarily split between bordering countries: ${split}. They have 2 minutes to reconnect and reclaim the exact saved tiles.`;
+    addLog(room, message);
+    addSystemMessage(room, message);
+  } else {
+    const message = `${player.name} disconnected. Their ${player.savedTerritory.length} tiles are saved for 2 minutes, but no connected neighbouring country could temporarily receive them.`;
+    addLog(room, message);
+    addSystemMessage(room, message);
+  }
+
+  scheduleDisconnectExpiry(room, playerIndex);
+
+  if (room.status === 'playing' && wasCurrentTurn) {
+    addLog(room, `${player.name}'s turn was skipped while they reconnect.`);
+    nextTurn(room);
   }
 
   if (room.status === 'playing') finishDrawIfAccepted(room);
@@ -1117,30 +1595,72 @@ function leaveRoom(socket) {
 
 io.on('connection', socket => {
   socket.data.lastChatAt = 0;
+  socket.data.reconnectToken = null;
 
-  socket.on('createRoom', ({ name }, callback) => {
-    leaveRoom(socket);
-    const room = createRoom(socket, name);
+  socket.on('resumeSession', ({ code, reconnectToken }, callback) => {
+    const normalizedCode = String(code || '').trim().toUpperCase();
+    const normalizedToken = sanitizeReconnectToken(reconnectToken);
+    const room = rooms.get(normalizedCode);
+
+    if (!room || !normalizedToken) {
+      return callback?.({
+        ok: false,
+        error: 'No recoverable match was found.',
+        expired: true
+      });
+    }
+
+    const playerIndex = room.players.findIndex(player => player.reconnectToken === normalizedToken);
+    if (playerIndex < 0) {
+      return callback?.({
+        ok: false,
+        error: 'The saved player could not be found.',
+        expired: true
+      });
+    }
+
+    reconnectPlayer(socket, room, playerIndex, callback);
+  });
+
+  socket.on('createRoom', ({ name, reconnectToken }, callback) => {
+    leaveRoom(socket, { allowReconnect: false });
+    const room = createRoom(socket, name, reconnectToken);
+    const player = room.players[0];
     socket.join(room.code);
     socket.data.roomCode = room.code;
-    callback?.({ ok: true, code: room.code });
+    socket.data.reconnectToken = player.reconnectToken;
+    callback?.({
+      ok: true,
+      code: room.code,
+      reconnectToken: player.reconnectToken
+    });
     emitRoom(room);
   });
 
-  socket.on('joinRoom', ({ code, name }, callback) => {
-    leaveRoom(socket);
+  socket.on('joinRoom', ({ code, name, reconnectToken }, callback) => {
+    leaveRoom(socket, { allowReconnect: false });
     const normalized = String(code || '').trim().toUpperCase();
     const room = rooms.get(normalized);
     if (!room) return callback?.({ ok: false, error: 'Room not found.' });
     if (room.status !== 'lobby') return callback?.({ ok: false, error: 'This game has already started.' });
     if (room.players.length >= 6) return callback?.({ ok: false, error: 'Room is full.' });
 
-    const player = makePlayer(socket.id, name, room.players.length);
+    const player = makePlayer(
+      socket.id,
+      name,
+      room.players.length,
+      uniqueReconnectToken(room, reconnectToken)
+    );
     room.players.push(player);
     socket.join(room.code);
     socket.data.roomCode = room.code;
+    socket.data.reconnectToken = player.reconnectToken;
     addSystemMessage(room, `${player.name} joined the room.`);
-    callback?.({ ok: true, code: room.code });
+    callback?.({
+      ok: true,
+      code: room.code,
+      reconnectToken: player.reconnectToken
+    });
     emitRoom(room);
   });
 
