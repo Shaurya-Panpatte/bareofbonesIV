@@ -13,7 +13,11 @@ let selected = null;
 let hovered = null;
 let armorChallengeKey = null;
 let shopStatusTimer = null;
+let resumeInFlight = false;
+let localDisconnectDeadline = null;
 
+const SESSION_STORAGE_KEY = 'conquest-grid-reconnect-session-v1';
+const RECONNECT_GRACE_MS = 2 * 60 * 1000;
 const TILE = 40;
 const WATER = '#07152a';
 const TERRAIN_META = {
@@ -27,11 +31,22 @@ socket.on('connect', () => {
   myId = socket.id;
   el('connectionBadge').textContent = 'Online';
   el('connectionBadge').classList.add('online');
+  attemptStoredReconnect();
 });
 
 socket.on('disconnect', () => {
   el('connectionBadge').textContent = 'Disconnected';
   el('connectionBadge').classList.remove('online');
+
+  const me = state?.players?.[getMyIndex()];
+  if (state?.status === 'playing' && me && !me.defeated) {
+    localDisconnectDeadline = Date.now() + (state.reconnectGraceMs || RECONNECT_GRACE_MS);
+    showReconnectBanner(
+      'Connection lost',
+      'Your turn will be skipped and your saved tiles are temporarily shared. Reconnecting automatically…',
+      localDisconnectDeadline
+    );
+  }
 });
 
 socket.on('roomState', next => {
@@ -42,6 +57,13 @@ socket.on('roomState', next => {
 
   state = next;
   if (!previous || roomChanged || turnChanged || mapChanged || next.pendingBattle) selected = null;
+
+  const me = next.players?.find(player => player.id === myId);
+  if (me?.connected) {
+    localDisconnectDeadline = null;
+    hideReconnectBanner();
+  }
+
   renderState();
 });
 
@@ -52,18 +74,38 @@ socket.on('battleResult', result => {
 
 el('createBtn').addEventListener('click', () => {
   clearHomeError();
-  socket.emit('createRoom', { name: el('playerName').value }, result => {
-    if (!result?.ok) el('homeError').textContent = result?.error || 'Could not create room.';
+  const name = el('playerName').value;
+  const reconnectToken = generateReconnectToken();
+
+  socket.emit('createRoom', { name, reconnectToken }, result => {
+    if (!result?.ok) {
+      el('homeError').textContent = result?.error || 'Could not create room.';
+      return;
+    }
+
+    saveReconnectSession({
+      code: result.code,
+      reconnectToken: result.reconnectToken,
+      name
+    });
   });
 });
 
 el('joinBtn').addEventListener('click', () => {
   clearHomeError();
-  socket.emit('joinRoom', {
-    name: el('playerName').value,
-    code: el('roomCodeInput').value
-  }, result => {
+  const name = el('playerName').value;
+  const code = el('roomCodeInput').value;
+  const reconnectToken = generateReconnectToken();
+
+  socket.emit('joinRoom', { name, code, reconnectToken }, result => {
     el('homeError').textContent = result?.ok ? '' : result?.error || 'Could not join room.';
+    if (!result?.ok) return;
+
+    saveReconnectSession({
+      code: result.code,
+      reconnectToken: result.reconnectToken,
+      name
+    });
   });
 });
 
@@ -167,6 +209,10 @@ el('closeBalanceBtn').addEventListener('click', () => {
   el('balanceModal').classList.add('hidden');
 });
 
+el('reconnectNowBtn').addEventListener('click', () => {
+  attemptStoredReconnect(true);
+});
+
 for (const modalId of ['helpModal', 'balanceModal']) {
   el(modalId).addEventListener('click', event => {
     if (event.target === el(modalId)) el(modalId).classList.add('hidden');
@@ -211,6 +257,137 @@ canvas.addEventListener('mouseleave', () => {
 });
 
 canvas.addEventListener('click', handleCanvasClick);
+
+function generateReconnectToken() {
+  try {
+    const bytes = new Uint8Array(24);
+    crypto.getRandomValues(bytes);
+    return Array.from(bytes, value => value.toString(16).padStart(2, '0')).join('');
+  } catch {
+    return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}-${Math.random().toString(36).slice(2)}`;
+  }
+}
+
+function loadReconnectSession() {
+  try {
+    const raw = localStorage.getItem(SESSION_STORAGE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    if (!parsed?.code || !parsed?.reconnectToken) return null;
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+function saveReconnectSession(session) {
+  try {
+    localStorage.setItem(SESSION_STORAGE_KEY, JSON.stringify(session));
+  } catch {
+    // Reconnection still works in the current tab even if storage is unavailable.
+  }
+}
+
+function clearReconnectSession() {
+  try {
+    localStorage.removeItem(SESSION_STORAGE_KEY);
+  } catch {
+    // Ignore storage errors.
+  }
+}
+
+function attemptStoredReconnect(manual = false) {
+  if (!socket.connected || resumeInFlight) return;
+
+  const saved = loadReconnectSession();
+  if (!saved) {
+    if (manual) el('homeError').textContent = 'No saved match was found in this browser.';
+    return;
+  }
+
+  const currentMe = state?.players?.find(player => player.id === myId);
+  if (currentMe?.connected) {
+    hideReconnectBanner();
+    return;
+  }
+
+  resumeInFlight = true;
+  showReconnectBanner(
+    'Restoring your match',
+    `Checking room ${saved.code} and recovering your saved territory…`,
+    localDisconnectDeadline
+  );
+
+  socket.emit('resumeSession', {
+    code: saved.code,
+    reconnectToken: saved.reconnectToken
+  }, result => {
+    resumeInFlight = false;
+
+    if (!result?.ok) {
+      if (result?.expired) {
+        clearReconnectSession();
+        state = null;
+        selected = null;
+        renderState();
+        hideReconnectBanner();
+        el('homeError').textContent = result?.error || 'The 2-minute reconnection window has expired.';
+      } else {
+        showReconnectBanner(
+          'Could not reconnect',
+          result?.error || 'The match could not be restored. Try again.',
+          localDisconnectDeadline
+        );
+      }
+      return;
+    }
+
+    saveReconnectSession({
+      ...saved,
+      code: result.code,
+      reconnectToken: result.reconnectToken
+    });
+    localDisconnectDeadline = null;
+    hideReconnectBanner();
+    el('homeError').textContent = '';
+  });
+}
+
+function showReconnectBanner(title, message, deadline = null) {
+  const banner = el('reconnectBanner');
+  el('reconnectTitle').textContent = title;
+  el('reconnectMessage').textContent = message;
+  el('reconnectCountdown').textContent = deadline
+    ? `${formatCountdown(deadline)} remaining`
+    : 'Automatic recovery active';
+  banner.classList.remove('hidden');
+}
+
+function hideReconnectBanner() {
+  el('reconnectBanner').classList.add('hidden');
+}
+
+function formatCountdown(deadline) {
+  if (!deadline) return '—';
+  const remaining = Math.max(0, deadline - Date.now());
+  const totalSeconds = Math.ceil(remaining / 1000);
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = String(totalSeconds % 60).padStart(2, '0');
+  return `${minutes}:${seconds}`;
+}
+
+function refreshReconnectDisplays() {
+  const banner = el('reconnectBanner');
+  if (!banner.classList.contains('hidden') && localDisconnectDeadline) {
+    el('reconnectCountdown').textContent = `${formatCountdown(localDisconnectDeadline)} remaining`;
+  }
+
+  if (state?.status === 'playing' && state.players?.some(player => player.reconnecting)) {
+    renderPlayerIntel();
+  }
+}
+
+setInterval(refreshReconnectDisplays, 1000);
 
 function clearHomeError() {
   el('homeError').textContent = '';
@@ -390,16 +567,23 @@ function renderPlayerIntel() {
       player.stats.army,
       Math.max(player.stats.army > 0 ? 1 : 0, Math.round(player.stats.army * effects.localDefenseShare))
     );
-    const status = player.resigned
-      ? 'Resigned'
-      : player.defeated
-        ? 'Eliminated'
-        : player.connected
-          ? 'Active'
-          : 'Disconnected';
+    const status = player.reconnecting
+      ? `Reconnecting — ${formatCountdown(player.reconnectDeadline)} left`
+      : player.forfeited
+        ? 'Disconnected — recovery expired'
+        : player.resigned
+          ? 'Resigned'
+          : player.defeated
+            ? 'Eliminated'
+            : player.connected
+              ? 'Active'
+              : 'Disconnected';
+    const territoryDisplay = player.reconnecting
+      ? `${player.savedTileCount} saved`
+      : `${player.tileCount}`;
 
     return `
-      <article class="intel-card ${isMe ? 'is-me' : ''} ${isCurrent ? 'is-current' : ''} ${player.defeated ? 'is-defeated' : ''}">
+      <article class="intel-card ${isMe ? 'is-me' : ''} ${isCurrent ? 'is-current' : ''} ${player.defeated ? 'is-defeated' : ''} ${player.reconnecting ? 'is-reconnecting' : ''}">
         <div class="intel-player-heading">
           <span class="player-dot" style="background:${safeColor(player.color)};color:${safeColor(player.color)}"></span>
           <div>
@@ -407,6 +591,13 @@ function renderPlayerIntel() {
             <small>Player ${index + 1} · ${status}${isCurrent ? ' · Current turn' : ''}</small>
           </div>
         </div>
+
+        ${player.reconnecting ? `
+          <div class="intel-reconnect-note">
+            <strong>Temporary border transfer</strong>
+            <span>Their turn is skipped. ${player.savedTileCount} exact tile${player.savedTileCount === 1 ? '' : 's'} will return if they reconnect before ${formatCountdown(player.reconnectDeadline)} reaches zero.</span>
+          </div>
+        ` : ''}
 
         <div class="intel-doctrine">
           <strong>${escapeHtml(player.doctrine?.name || 'Doctrine pending')}</strong>
@@ -417,7 +608,7 @@ function renderPlayerIntel() {
         <div class="intel-key-numbers">
           <div><span>Troops</span><strong>${player.stats.army}</strong></div>
           <div><span>Local defenders</span><strong>≈${localDefenseTroops}</strong></div>
-          <div><span>Territory</span><strong>${player.tileCount}</strong></div>
+          <div><span>Territory</span><strong>${territoryDisplay}</strong></div>
           <div><span>Base combat</span><strong>${formatSignedPercent(baseCombatModifier)}</strong></div>
         </div>
 
