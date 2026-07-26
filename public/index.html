@@ -23,6 +23,18 @@
       </div>
     </header>
 
+    <section id="reconnectBanner" class="reconnect-banner hidden" role="status" aria-live="assertive">
+      <div>
+        <p class="eyebrow">MATCH RECOVERY</p>
+        <strong id="reconnectTitle">Restoring your match</strong>
+        <span id="reconnectMessage">Checking your saved session…</span>
+      </div>
+      <div class="reconnect-banner-actions">
+        <span id="reconnectCountdown">Automatic recovery active</span>
+        <button id="reconnectNowBtn" class="primary compact-action" type="button">Reconnect now</button>
+      </div>
+    </section>
+
     <section id="homeView" class="panel home-panel">
       <div class="hero-copy">
         <span class="pill">2–6 players</span>
@@ -112,6 +124,7 @@
           <button id="resignBtn" class="danger resign-action" title="Resigning immediately removes you from the active game.">Resign</button>
         </div>
         <p id="gameActionStatus" class="game-action-status"></p>
+        <small class="muted"><strong>Disconnect rule:</strong> your turn is skipped and your current territory is temporarily divided between neighbouring active countries. Your exact saved tiles return automatically if you reconnect in this browser within 2 minutes. After 2 minutes, the transfer becomes permanent.</small>
       </aside>
 
       <section class="board-panel panel">
@@ -270,6 +283,18 @@
           <div><strong>Bridge</strong><span>+8% defense and a −4% attack penalty for the attacker.</span></div>
         </div>
         <p class="help-footnote">The displayed estimate combines committed troops, the defender’s local force, stats, terrain, armor, fortification, morale, exhaustion, support, logistics, and capital status. Estimates are capped between 15% and 85%; actual battles still include limited randomness and casualties over up to three rounds.</p>
+      </section>
+
+      <section class="help-section">
+        <h3>Disconnects, forfeits, draws, and resignations</h3>
+        <div class="rule-grid">
+          <div><strong>Temporary disconnect</strong><span>Any pending battle involving the disconnected player is cancelled and their turn is skipped. Their exact owned tiles are saved for 2 minutes, while the visible territory is divided as evenly as possible among active connected countries sharing a direct border.</span></div>
+          <div><strong>Automatic reconnection</strong><span>This browser stores a private match-recovery token. Reopening the game in the same browser within 2 minutes automatically attempts to rejoin the room. A recovery banner also lets you retry manually.</span></div>
+          <div><strong>Territory restoration</strong><span>Successful reconnection returns the exact saved tile coordinates to the player, even if those tiles were temporarily held or captured by another country during the absence. The reconnected player waits until their next normal turn.</span></div>
+          <div><strong>Recovery expiry</strong><span>If the player does not reconnect within 2 minutes, they permanently forfeit. Temporary holders keep the land. If no active neighbour could receive a tile, it stays under the disconnected country until it can be reassigned or captured.</span></div>
+          <div><strong>Draw</strong><span>A draw only succeeds when every active connected player accepts it. A player may withdraw their vote before unanimity is reached.</span></div>
+          <div><strong>Resign</strong><span>Resigning still eliminates the player immediately and has no reconnection window.</span></div>
+        </div>
       </section>
 
       <section class="help-section">
