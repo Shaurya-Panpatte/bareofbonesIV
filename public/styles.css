@@ -1330,3 +1330,194 @@ canvas {
     align-self: flex-end;
   }
 }
+
+/* Unique national doctrines and explicit stat effects */
+.doctrine-panel {
+  margin: 0 0 14px;
+  padding: 12px;
+  border-radius: 13px;
+  border: 1px solid rgba(124, 92, 255, 0.3);
+  background: linear-gradient(145deg, rgba(124, 92, 255, 0.13), rgba(79, 140, 255, 0.06));
+}
+
+.doctrine-panel-heading span,
+.doctrine-panel-heading strong {
+  display: block;
+}
+
+.doctrine-panel-heading span {
+  color: #9aa9c2;
+  font-size: 0.59rem;
+  font-weight: 800;
+  letter-spacing: 0.11em;
+}
+
+.doctrine-panel-heading strong {
+  margin-top: 3px;
+  font-size: 0.9rem;
+}
+
+.doctrine-panel p {
+  margin: 7px 0 9px;
+  color: #b9c5d8;
+  font-size: 0.68rem;
+  line-height: 1.45;
+}
+
+.doctrine-effect-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+
+.doctrine-effect-chips span,
+.intel-doctrine em {
+  display: inline-flex;
+  padding: 4px 6px;
+  border-radius: 999px;
+  border: 1px solid rgba(143, 177, 255, 0.19);
+  background: rgba(79, 140, 255, 0.09);
+  color: #c8d8ff;
+  font-size: 0.57rem;
+  font-style: normal;
+  line-height: 1.25;
+}
+
+.doctrine-live-effects {
+  display: grid;
+  gap: 4px;
+  margin-top: 9px;
+  padding-top: 8px;
+  border-top: 1px solid rgba(255, 255, 255, 0.07);
+}
+
+.doctrine-live-effects span {
+  color: #aebbd0;
+  font-size: 0.59rem;
+  line-height: 1.35;
+}
+
+.intel-doctrine {
+  margin-top: 9px;
+  padding: 8px;
+  border-radius: 9px;
+  border: 1px solid rgba(124, 92, 255, 0.18);
+  background: rgba(124, 92, 255, 0.07);
+}
+
+.intel-doctrine > strong,
+.intel-doctrine > span {
+  display: block;
+}
+
+.intel-doctrine > strong {
+  color: #ded9ff;
+  font-size: 0.72rem;
+}
+
+.intel-doctrine > span {
+  margin-top: 3px;
+  color: #aeb9cc;
+  font-size: 0.59rem;
+  line-height: 1.35;
+}
+
+.intel-doctrine > div {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 6px;
+}
+
+.intel-active-effects {
+  display: grid;
+  gap: 4px;
+  margin-top: 9px;
+  padding: 8px;
+  border-radius: 9px;
+  background: rgba(5, 8, 15, 0.3);
+}
+
+.intel-active-effects > small {
+  color: #8fa5ce;
+  font-size: 0.58rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.intel-active-effects > span {
+  color: #aeb9cc;
+  font-size: 0.58rem;
+  line-height: 1.35;
+}
+
+.intel-active-effects b {
+  color: #eef3ff;
+  font-weight: 750;
+}
+
+.player-intel {
+  max-height: 560px;
+}
+
+.odds-preview em {
+  display: block;
+  margin-top: 5px;
+  color: #aebbd0;
+  font-size: 0.61rem;
+  font-style: normal;
+  line-height: 1.3;
+}
+
+.doctrine-help-grid .help-upgrade-card {
+  border-color: rgba(124, 92, 255, 0.18);
+}
+
+.doctrine-audit-card {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.doctrine-audit-summary {
+  margin: 0 !important;
+  color: #bbc6d8 !important;
+}
+
+.audit-effect-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 5px 8px;
+  padding: 8px;
+  border-radius: 9px;
+  background: rgba(5, 8, 15, 0.28);
+}
+
+.audit-effect-grid span {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  color: #9eacc2;
+  font-size: 0.62rem;
+}
+
+.audit-effect-grid strong {
+  color: #eef3ff;
+  white-space: nowrap;
+}
+
+.doctrine-audit-cards {
+  grid-template-columns: repeat(auto-fit, minmax(285px, 1fr));
+}
+
+.audit-table {
+  min-width: 1210px;
+}
+
+@media (max-width: 1300px) {
+  .player-intel { max-height: 420px; }
+}
+
+@media (max-width: 560px) {
+  .audit-effect-grid { grid-template-columns: 1fr; }
+}
