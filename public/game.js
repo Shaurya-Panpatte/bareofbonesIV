@@ -273,6 +273,7 @@ function renderGame() {
 
   if (me) {
     renderStats(me);
+    renderDoctrinePanel(me);
     renderUpgradeShop(me);
 
     const armySlider = el('armyCommit');
@@ -347,6 +348,31 @@ function renderStats(me) {
   `).join('');
 }
 
+function renderDoctrinePanel(player) {
+  const panel = el('myDoctrinePanel');
+  if (!player?.doctrine) {
+    panel.innerHTML = '<small>National doctrine</small><strong>Assigned when the game starts</strong>';
+    return;
+  }
+
+  const effects = player.effects || getPlayerEffects(player);
+  panel.innerHTML = `
+    <div class="doctrine-panel-heading">
+      <span>YOUR NATIONAL DOCTRINE</span>
+      <strong>${escapeHtml(player.doctrine.name)}</strong>
+    </div>
+    <p>${escapeHtml(player.doctrine.summary)}</p>
+    <div class="doctrine-effect-chips">
+      ${(player.doctrine.effects || []).map(effect => `<span>${escapeHtml(effect)}</span>`).join('')}
+    </div>
+    <div class="doctrine-live-effects">
+      <span>Efficiency: ${formatSignedPercent(Math.round(effects.efficiencyCombat * 100))} combat · ${Math.round(effects.efficiencyIncomeMultiplier * 100)}% income</span>
+      <span>Logistics: ${formatSignedPercent(Math.round(effects.logisticsAttack * 100))} attack · ${Math.round(effects.localDefenseShare * 100)}% local defense</span>
+      <span>Armor: +${Math.round(effects.armorDefense * 100)}% defense · −${Math.round(effects.armorCasualtyReduction * 100)}% defending losses</span>
+    </div>
+  `;
+}
+
 function renderPlayerIntel() {
   const container = el('playerIntel');
   if (!state?.players?.length) {
@@ -358,10 +384,11 @@ function renderPlayerIntel() {
     const isMe = player.id === myId;
     const isCurrent = state.status === 'playing' && index === state.turnIndex;
     const upgrades = player.upgradeLevels || {};
+    const effects = player.effects || getPlayerEffects(player);
     const baseCombatModifier = Math.round(sumBonuses(sharedCombatBonuses(player)) * 100);
     const localDefenseTroops = Math.min(
       player.stats.army,
-      Math.max(player.stats.army > 0 ? 1 : 0, Math.round(player.stats.army * localDefenseShare(player)))
+      Math.max(player.stats.army > 0 ? 1 : 0, Math.round(player.stats.army * effects.localDefenseShare))
     );
     const status = player.resigned
       ? 'Resigned'
@@ -381,6 +408,12 @@ function renderPlayerIntel() {
           </div>
         </div>
 
+        <div class="intel-doctrine">
+          <strong>${escapeHtml(player.doctrine?.name || 'Doctrine pending')}</strong>
+          <span>${escapeHtml(player.doctrine?.summary || 'Assigned when the game starts.')}</span>
+          <div>${(player.doctrine?.effects || []).map(effect => `<em>${escapeHtml(effect)}</em>`).join('')}</div>
+        </div>
+
         <div class="intel-key-numbers">
           <div><span>Troops</span><strong>${player.stats.army}</strong></div>
           <div><span>Local defenders</span><strong>≈${localDefenseTroops}</strong></div>
@@ -397,6 +430,15 @@ function renderPlayerIntel() {
           <span>Morale <strong>${player.stats.morale}</strong></span>
           <span>Exhaustion <strong>${player.stats.warExhaustion}%</strong></span>
           <span>Money <strong>$${player.stats.money}</strong></span>
+        </div>
+
+        <div class="intel-active-effects">
+          <small>Exact active effects</small>
+          <span><b>Efficiency</b> ${formatSignedPercent(Math.round(effects.efficiencyCombat * 100))} combat · ${Math.round(effects.efficiencyIncomeMultiplier * 100)}% gross income</span>
+          <span><b>Logistics</b> ${formatSignedPercent(Math.round(effects.logisticsAttack * 100))} attack · ${Math.round(effects.localDefenseShare * 100)}% army responds locally</span>
+          <span><b>Supply</b> +${effects.logisticsRecruitBonus} recruits · +${effects.supplyCapacityBonus} capacity · −${Math.round(effects.upkeepDiscount * 100)}% army upkeep</span>
+          <span><b>Armor</b> +${Math.round(effects.armorDefense * 100)}% defense · −${Math.round(effects.armorCasualtyReduction * 100)}% defending casualties</span>
+          <span><b>Fortification</b> +${Math.round(effects.fortificationDefense * 100)}% defense</span>
         </div>
 
         <div class="intel-upgrade-block">
@@ -419,21 +461,22 @@ function renderStartingBalance() {
   const container = el('startingBalanceContent');
   const audit = state?.startingBalance;
   if (!audit?.players?.length) {
-    container.innerHTML = '<div class="help-callout"><strong>No audit available</strong><p>The starting balance audit appears after the host starts the game.</p></div>';
+    container.innerHTML = '<div class="help-callout"><strong>No audit available</strong><p>The starting doctrine audit appears after the host starts the game.</p></div>';
     return;
   }
 
-  const equalityClass = audit.allCoreStatsEqual ? 'audit-good' : 'audit-warning';
-  const equalityText = audit.allCoreStatsEqual
-    ? 'All tracked starting combat stats are identical.'
-    : 'At least one tracked starting combat stat differs.';
+  const doctrineClass = audit.allDoctrinesUnique ? 'audit-good' : 'audit-warning';
+  const doctrineText = audit.allDoctrinesUnique
+    ? 'Every player received a different doctrine. Assignment was shuffled and not tied to player order.'
+    : 'A duplicate or missing doctrine was detected.';
   const upgradesText = audit.allUpgradeLevelsEqual
-    ? 'Every purchased-upgrade level started at 0.'
+    ? 'Purchased upgrade levels started at 0 for everyone.'
     : 'At least one purchased-upgrade level was not 0.';
 
   const rows = audit.players.map(player => `
     <tr>
       <td><span class="audit-player"><i style="background:${safeColor(player.color)}"></i>${escapeHtml(player.name)}</span></td>
+      <td><strong>${escapeHtml(player.doctrine?.name || 'Unknown')}</strong></td>
       <td>${player.turnOrder}</td>
       <td>${player.stats.army}${formatAuditDelta(player.deviations.army)}</td>
       <td>${player.stats.efficiency}%${formatAuditDelta(player.deviations.efficiency)}</td>
@@ -447,25 +490,43 @@ function renderStartingBalance() {
     </tr>
   `).join('');
 
-  const terrainCards = audit.players.map(player => `
-    <article class="audit-terrain-card">
-      <div class="intel-player-heading">
-        <span class="player-dot" style="background:${safeColor(player.color)};color:${safeColor(player.color)}"></span>
-        <div><strong>${escapeHtml(player.name)}</strong><small>Starting terrain mix</small></div>
-      </div>
-      <div class="audit-terrain-grid">
-        <span>Plains <strong>${player.terrain.plains}</strong></span>
-        <span>Forest <strong>${player.terrain.forest}</strong></span>
-        <span>Mountain <strong>${player.terrain.mountain}</strong></span>
-        <span>Bridge <strong>${player.terrain.bridge}</strong></span>
-      </div>
-      <p>${startingDifferenceSummary(player)}</p>
-    </article>
-  `).join('');
+  const doctrineCards = audit.players.map(player => {
+    const effects = player.derivedEffects || {};
+    return `
+      <article class="audit-terrain-card doctrine-audit-card">
+        <div class="intel-player-heading">
+          <span class="player-dot" style="background:${safeColor(player.color)};color:${safeColor(player.color)}"></span>
+          <div><strong>${escapeHtml(player.name)}</strong><small>${escapeHtml(player.doctrine?.name || 'Unknown doctrine')}</small></div>
+        </div>
+        <p class="doctrine-audit-summary">${escapeHtml(player.doctrine?.summary || '')}</p>
+        <div class="doctrine-effect-chips">
+          ${(player.doctrine?.effects || []).map(effect => `<span>${escapeHtml(effect)}</span>`).join('')}
+        </div>
+        <div class="audit-effect-grid">
+          <span>Efficiency combat <strong>${formatSignedPercent(Math.round((effects.efficiencyCombat || 0) * 100))}</strong></span>
+          <span>Income multiplier <strong>${Math.round((effects.efficiencyIncomeMultiplier || 1) * 100)}%</strong></span>
+          <span>Logistics attack <strong>${formatSignedPercent(Math.round((effects.logisticsAttack || 0) * 100))}</strong></span>
+          <span>Local defense share <strong>${Math.round((effects.localDefenseShare || 0.22) * 100)}%</strong></span>
+          <span>Armor defense <strong>+${Math.round((effects.armorDefense || 0) * 100)}%</strong></span>
+          <span>Armor loss reduction <strong>−${Math.round((effects.armorCasualtyReduction || 0) * 100)}%</strong></span>
+          <span>Fortification <strong>+${Math.round((effects.fortificationDefense || 0) * 100)}%</strong></span>
+          <span>Supply capacity <strong>+${effects.supplyCapacityBonus || 0}</strong></span>
+        </div>
+        <div class="audit-terrain-grid">
+          <span>Plains <strong>${player.terrain.plains}</strong></span>
+          <span>Forest <strong>${player.terrain.forest}</strong></span>
+          <span>Mountain <strong>${player.terrain.mountain}</strong></span>
+          <span>Bridge <strong>${player.terrain.bridge}</strong></span>
+        </div>
+        <p>${startingDifferenceSummary(player)}</p>
+      </article>
+    `;
+  }).join('');
 
   container.innerHTML = `
-    <div class="audit-summary ${equalityClass}">
-      <strong>${equalityText}</strong>
+    <div class="audit-summary ${doctrineClass}">
+      <strong>${doctrineText}</strong>
+      <span>Starting stats intentionally differ because each doctrine has strengths and trade-offs.</span>
       <span>${upgradesText}</span>
       <span>Map-generated differences can remain in territory size, terrain mix, capital terrain, and turn order.</span>
     </div>
@@ -474,7 +535,7 @@ function renderStartingBalance() {
       <table class="audit-table">
         <thead>
           <tr>
-            <th>Player</th><th>Turn</th><th>Army</th><th>Efficiency</th><th>Logistics</th><th>Fortification</th><th>Technology</th><th>Armor</th><th>Tiles</th><th>Avg terrain defense</th><th>Capital</th>
+            <th>Player</th><th>Doctrine</th><th>Turn</th><th>Army</th><th>Efficiency</th><th>Logistics</th><th>Fortification</th><th>Technology</th><th>Armor</th><th>Tiles</th><th>Avg terrain defense</th><th>Capital</th>
           </tr>
         </thead>
         <tbody>${rows}</tbody>
@@ -482,7 +543,7 @@ function renderStartingBalance() {
     </div>
 
     <p class="audit-legend">Small values in parentheses show the difference from the player average at the exact moment the game started. This audit is frozen and does not change after upgrades or battles.</p>
-    <div class="audit-terrain-cards">${terrainCards}</div>
+    <div class="audit-terrain-cards doctrine-audit-cards">${doctrineCards}</div>
   `;
 }
 
@@ -501,7 +562,7 @@ function startingDifferenceSummary(player) {
     .filter(stat => Math.abs(Number(player.deviations?.[stat]) || 0) >= 0.05);
   const statText = statDifferences.length
     ? `Starting stat differences: ${statDifferences.join(', ')}.`
-    : 'No starting army or upgrade-stat advantage.';
+    : 'No tracked stat differs from the player average.';
   const tileDelta = Number(player.deviations?.tileCount) || 0;
   const terrainDelta = Number(player.deviations?.averageTerrainDefense) || 0;
   return `${statText} Tiles ${signedNumber(tileDelta)} vs average; terrain defense ${signedNumber(terrainDelta)} percentage points vs average.`;
@@ -680,10 +741,30 @@ function isAdjacent(a, b) {
   return Math.abs(a.x - b.x) + Math.abs(a.y - b.y) === 1;
 }
 
+function getPlayerEffects(player) {
+  if (player?.effects) return player.effects;
+  const efficiencyCombat = (player.stats.efficiency - 85) * 0.0045;
+  const efficiencyIncomeMultiplier = clamp(0.55 + player.stats.efficiency * 0.0055, 0.88, 1.22);
+  const logisticsLevels = Math.max(0, player.stats.logistics - 1);
+  return {
+    efficiencyCombat,
+    efficiencyIncomeMultiplier,
+    logisticsAttack: logisticsLevels * 0.03,
+    localDefenseShare: clamp(0.22 + logisticsLevels * 0.02, 0.22, 0.34),
+    logisticsRecruitBonus: player.stats.logistics * 4,
+    supplyCapacityBonus: player.stats.logistics * 40,
+    upkeepDiscount: Math.min(0.35, logisticsLevels * 0.08),
+    armorDefense: Math.min(0.18, Math.max(0, player.stats.armor) * 0.03),
+    armorCasualtyReduction: Math.min(0.12, Math.max(0, player.stats.armor) * 0.018),
+    fortificationDefense: Math.max(0, player.stats.fortification - 1) * 0.03
+  };
+}
+
 function sharedCombatBonuses(player) {
+  const effects = getPlayerEffects(player);
   return {
     technology: (player.stats.technology - 2) * 0.035,
-    efficiency: (player.stats.efficiency - 85) * 0.0025,
+    efficiency: effects.efficiencyCombat,
     morale: (player.stats.morale - 100) * 0.003,
     exhaustion: -player.stats.warExhaustion * 0.0015
   };
@@ -694,7 +775,7 @@ function sumBonuses(bonuses) {
 }
 
 function localDefenseShare(player) {
-  return clamp(0.22 + Math.max(0, player.stats.logistics - 1) * 0.01, 0.22, 0.29);
+  return getPlayerEffects(player).localDefenseShare;
 }
 
 function updateOddsPreview(target) {
@@ -724,19 +805,21 @@ function updateOddsPreview(target) {
   const isDefenderCapital = state.capitals?.[defenderIndex]?.x === target.x &&
     state.capitals?.[defenderIndex]?.y === target.y;
 
+  const attackerEffects = getPlayerEffects(attacker);
+  const defenderEffects = getPlayerEffects(defender);
   const attackerBonuses = {
     ...sharedCombatBonuses(attacker),
     support: support * 0.012,
-    logistics: Math.max(0, attacker.stats.logistics - 1) * 0.012,
+    logistics: attackerEffects.logisticsAttack,
     bridge: terrainKey === 'bridge' ? -0.04 : 0
   };
   const defenderBonuses = {
     ...sharedCombatBonuses(defender),
     terrain: terrain.defense - 1,
     home: 0.03,
-    fortification: Math.max(0, defender.stats.fortification - 1) * 0.018,
+    fortification: defenderEffects.fortificationDefense,
     capital: isDefenderCapital ? 0.08 : 0,
-    armor: Math.min(0.12, Math.sqrt(Math.max(0, defender.stats.armor)) * 0.035)
+    armor: defenderEffects.armorDefense
   };
 
   const attackerFactor = clamp(1 + sumBonuses(attackerBonuses), 0.78, 1.38);
@@ -754,14 +837,20 @@ function updateOddsPreview(target) {
   const terrainBonus = Math.round(defenderBonuses.terrain * 100);
   const fortBonus = Math.round(defenderBonuses.fortification * 100);
   const armorBonus = Math.round(defenderBonuses.armor * 100);
+  const armorLossReduction = Math.round(defenderEffects.armorCasualtyReduction * 100);
+  const attackerEfficiency = Math.round(attackerBonuses.efficiency * 100);
+  const defenderEfficiency = Math.round(defenderBonuses.efficiency * 100);
+  const logisticsBonus = Math.round(attackerBonuses.logistics * 100);
+  const localShare = Math.round(defenderEffects.localDefenseShare * 100);
   const capitalBonus = Math.round(defenderBonuses.capital * 100);
 
   preview.innerHTML = `
     <span>${escapeHtml(terrain.name)}${isDefenderCapital ? ' · Capital' : ''}</span>
     <strong>${odds}% · ${rating}</strong>
     <small>Attack ${formatSignedPercent(attackerTotal)} · Defense ${formatSignedPercent(defenderTotal)}</small>
+    <em>Efficiency ${formatSignedPercent(attackerEfficiency)} vs ${formatSignedPercent(defenderEfficiency)} · Logistics ${formatSignedPercent(logisticsBonus)} · Armor +${armorBonus}%</em>
   `;
-  preview.title = `Defender force: ${defenderForce}. Terrain +${terrainBonus}%, fortification +${fortBonus}%, armor +${armorBonus}%, capital +${capitalBonus}%.`;
+  preview.title = `Defender force: ${defenderForce} (${localShare}% of total army). Terrain +${terrainBonus}%, fortification +${fortBonus}%, armor +${armorBonus}% defense and −${armorLossReduction}% defending casualties, capital +${capitalBonus}%.`;
   preview.className = `odds-preview ${odds >= 62 ? 'good' : odds >= 45 ? 'risky' : 'bad'}`;
 }
 
@@ -1029,9 +1118,14 @@ function showBattleResult(result) {
     <div class="modifier-row">
       <span>Attack total ${formatSignedPercent(result.modifiers.attackerTotal)}</span>
       <span>Defense total ${formatSignedPercent(result.modifiers.defenderTotal)}</span>
+      <span>Attacker efficiency ${formatSignedPercent(result.modifiers.attackerEfficiency)}</span>
+      <span>Defender efficiency ${formatSignedPercent(result.modifiers.defenderEfficiency)}</span>
+      <span>Attacker logistics ${formatSignedPercent(result.modifiers.attackerLogistics)}</span>
+      <span>Defender local force ${result.modifiers.defenderLocalShare}%</span>
       <span>Terrain +${result.modifiers.terrainDefense}%</span>
       <span>Fortification +${result.modifiers.fortification}%</span>
-      <span>Armor +${result.modifiers.armorDefense}%</span>
+      <span>Armor +${result.modifiers.armorDefense}% defense</span>
+      <span>Armor −${result.modifiers.armorCasualtyReduction}% losses</span>
       <span>Capital +${result.modifiers.capitalDefense}%</span>
     </div>
   `;
